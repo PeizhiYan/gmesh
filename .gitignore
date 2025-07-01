@@ -1,0 +1,16 @@
+# ignore system files
+.DS_Store
+Thumbs.db
+
+# ignore Python compiled files
+*.pyc
+__pycache__/
+utils/__pycache__/
+
+# ignore jupyter notebook files
+.ipynb_checkpoints
+
+/dev-notebooks
+
+# /data
+
