@@ -34,6 +34,23 @@ Please see ```./examples```.
 
 
 
+
+
+
+## Demo
+
+You can play with our interactive demonstration to see the rendering results: ```./interactive_demo.py```.
+
+<p align="center">
+    <a href="https://www.youtube.com/watch?v=iVwSZtwr9GI">
+        <img src="https://img.youtube.com/vi/iVwSZtwr9GI/0.jpg" alt="GMesh Demo Video" width="400px" height="auto"/>
+    </a>
+    <br>
+    <a href="https://www.youtube.com/watch?v=iVwSZtwr9GI">Watch the demo video on YouTube</a>
+</p>
+
+
+
 ## Disclaimer
 
 The code can be used for research purposes, **provided that the terms of the licenses of any third-party libraries or dependencies are followed**. For commercial use, the parts of code we wrote are for free, but please be aware to get permissions from any third-party to use their code or dependencies. We do not assume any responsibility for any issues, damages, or liabilities that may arise from the use of this code. Users are responsible for ensuring compliance with any legal requirements, including licensing terms and conditions, and for verifying that the code is suitable for their intended purposes.
@@ -47,6 +64,13 @@ The code can be used for research purposes, **provided that the terms of the lic
 Please cite this work if you find it useful in your projects. 
 
 ```bibtex
-
+@software{Yan_GMesh_Differentiable_Hybrid_2025,
+    author = {Yan, Peizhi},
+    month = jul,
+    title = {{GMesh: Differentiable Hybrid Renderer for 3D Gaussians and Meshes}},
+    url = {https://github.com/PeizhiYan/gmesh},
+    version = {0.1},
+    year = {2025}
+}
 ```
 
