@@ -44,16 +44,19 @@ def blend_rgba(rgb_m, depth_m, alpha_m, rgb_g, depth_g, alpha_g):
         depth_out: [B, H, W, 1]
         alpha_out: [B, H, W, 1]
     """
-    # mask: True where mesh is in front, False where Gaussian is in front or equal
-    mesh_in_front = (depth_m < depth_g)
 
-    # foreground and background selection
-    C_fg = torch.where(mesh_in_front, rgb_m, rgb_g)
-    A_fg = torch.where(mesh_in_front, alpha_m, alpha_g)
-    D_fg = torch.where(mesh_in_front, depth_m, depth_g)
-    C_bg = torch.where(mesh_in_front, rgb_g, rgb_m)
-    A_bg = torch.where(mesh_in_front, alpha_g, alpha_m)
-    D_bg = torch.where(mesh_in_front, depth_g, depth_m)
+    # mask: True where Gaussian is in front
+    gaussian_in_front = (depth_g < depth_m)
+
+    # foreground selection
+    C_fg = torch.where(gaussian_in_front, rgb_g, rgb_m)
+    A_fg = torch.where(gaussian_in_front, alpha_g, alpha_m)
+    D_fg = torch.where(gaussian_in_front, depth_g, depth_m)
+
+    # background selection
+    C_bg = torch.where(gaussian_in_front, rgb_m, rgb_g)
+    A_bg = torch.where(gaussian_in_front, alpha_m, alpha_g)
+    D_bg = torch.where(gaussian_in_front, depth_m, depth_g)
 
     # alpha compositing ("over" operator)
     rgb_blend = C_fg * A_fg + C_bg * (1 - A_fg)
@@ -63,5 +66,4 @@ def blend_rgba(rgb_m, depth_m, alpha_m, rgb_g, depth_g, alpha_g):
     depth_blend = torch.where(A_fg > 0, D_fg, D_bg)
 
     return rgb_blend, depth_blend, alpha_blend
-
 

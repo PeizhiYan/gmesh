@@ -57,7 +57,7 @@ class CustomMeshRenderer:
 
         self.raster_settings = RasterizationSettings(
             image_size=self.image_height,
-            blur_radius=0.0,
+            blur_radius=0.0001,
             faces_per_pixel=1
         )
 
