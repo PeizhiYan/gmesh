@@ -13,6 +13,7 @@ from pytorch3d.structures import Meshes
 from pytorch3d.renderer import TexturesVertex
 
 from utils.graphics_utils import *
+from utils.image_utils import composite_with_bg
 from scenes.mesh import Mesh
 from scenes.cameras import PerspectiveCamera
 
@@ -46,12 +47,13 @@ def ndc_depth_to_real_depth(depth, znear, zfar):
 
 
 class CustomMeshRenderer:
-    def __init__(self, camera : PerspectiveCamera):
+    def __init__(self, camera : PerspectiveCamera, bg_color = (1.0,1.0,1.0)):
         self.camera = camera
         self.image_height = camera.image_height
         self.image_width = camera.image_width
         self.z_near = camera.z_near
         self.z_far = camera.z_far
+        self.bg_color = bg_color        # background color
 
         self.raster_settings = RasterizationSettings(
             image_size=self.image_height,
@@ -159,8 +161,11 @@ class CustomMeshRenderer:
         # we currently do not support mesh opacity
         alpha = (alpha > 0).to(torch.float32).detach()
 
-        # mask out empty pixels
-        rgb = rgb * alpha
+        # # mask out empty pixels
+        # rgb = rgb * alpha
+
+        # set background color
+        rgb = composite_with_bg(rgb, alpha, bg_color = self.bg_color)
 
         return rgb, depth, alpha
 

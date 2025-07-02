@@ -8,6 +8,22 @@ import numpy as np
 
 from utils.graphics_utils import *
 
+def look_at_matrix(eye, target, up):
+    # eye, target, up: [B, 3]
+    z_axis = torch.nn.functional.normalize(eye - target, dim=-1)  # [B, 3]
+    x_axis = torch.nn.functional.normalize(torch.cross(up, z_axis), dim=-1)
+    y_axis = torch.cross(z_axis, x_axis)
+
+    # [B, 3, 3]
+    R = torch.stack([x_axis, y_axis, z_axis], dim=-1)
+    t = -torch.bmm(R, eye.unsqueeze(-1)).squeeze(-1)  # [B, 3]
+    Rt = torch.cat([R, t.unsqueeze(-1)], dim=-1)  # [B, 3, 4]
+    # Homogeneous
+    bottom = torch.tensor([0, 0, 0, 1], dtype=Rt.dtype, device=Rt.device).expand(Rt.shape[0], 1, 4)
+    Rt = torch.cat([Rt, bottom], dim=1)  # [B, 4, 4]
+    return Rt
+
+
 
 class PerspectiveCamera:
     def __init__(self, image_width=512, image_height=512, fov_x=20, fov_y=20, z_near=0.1, z_far=100, device='cuda'):
@@ -36,7 +52,41 @@ class PerspectiveCamera:
 
 
 class OrbitCamera(PerspectiveCamera):
-    def __init__(self):
-        super().__init__()
-        pass
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
+    def compute_camera_offsets(self, yaw, pitch, radius):
+        dx = torch.sin(yaw) * radius * 0.9
+        dy = -torch.sin(pitch) * radius * 0.9
+        dz_a = radius - torch.cos(yaw) * radius
+        dz_b = radius - torch.cos(pitch) * radius
+        dz = dz_a + dz_b
+        return dx, dy, dz
+
+    def get_view_matrix(self, camera_pose: torch.Tensor):
+        """
+        camera_pose: [B, 3], (elevation, azimuth, distance)
+        - elevation: angle from Y axis (radians)
+        - azimuth: angle around Y axis (radians)
+        - distance: distance from origin
+        Returns:
+            [B, 4, 4] view matrix (world to camera)
+        """
+        B = camera_pose.shape[0]
+        elevation = camera_pose[:, 0]  # [B]
+        azimuth   = camera_pose[:, 1]  # [B]
+        distance  = camera_pose[:, 2]  # [B]
+
+        yaw = azimuth
+        pitch = elevation
+        roll = torch.zeros_like(yaw)
+
+        dx, dy, dz = self.compute_camera_offsets(yaw, pitch, distance)
+        # torch.stack to shape [B, 6]
+        camera_6dof = torch.stack([yaw, pitch, roll, dx, dy, distance - dz], dim=-1)
+
+        Rt = build_view_matrix(camera_6dof)  # [B, 4, 4]
+        Rt[:, :, [1,2]] *= -1                # OpenCV/graphics convention fix
+
+        viewmats = torch.linalg.inv(Rt)      # [B, 4, 4]
+        return viewmats

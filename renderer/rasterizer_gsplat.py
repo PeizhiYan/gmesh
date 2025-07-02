@@ -9,17 +9,18 @@ from gsplat.rendering import rasterization
 from scenes.gaussians import Gaussians
 from scenes.cameras import PerspectiveCamera
 # from utils.graphics_utils import build_view_matrix
-
+from utils.image_utils import composite_with_bg
 
 class GaussianRasterizer:
 
-    def __init__(self, camera : PerspectiveCamera, tile_size = 16):
+    def __init__(self, camera : PerspectiveCamera, tile_size = 16, bg_color = (1.0,1.0,1.0)):
         self.camera = camera
         self.image_height = camera.image_height
         self.image_width = camera.image_width
         self.z_near = camera.z_near
         self.z_far = camera.z_far
-        self.tile_size = tile_size
+        self.tile_size = tile_size      # tile size, as used in 3DGS
+        self.bg_color = bg_color        # background color
 
     def rasterize(self,
                   gaussians : Gaussians,
@@ -73,6 +74,8 @@ class GaussianRasterizer:
         rgb = render_colors[:,:,:,:3]    # [B, H, W, 3]
         depth = render_colors[:,:,:,3:4] # [B, H, W, 1]
         alpha = render_alphas[:,:,:,:1]  # [B, H, W, 1]
+
+        rgb = composite_with_bg(rgb, alpha, bg_color = self.bg_color)
 
         return rgb, depth, alpha
 
