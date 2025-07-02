@@ -1,10 +1,11 @@
-cff-version: 0.1
+cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
-authors:
-- family-names: "Yan"
-  given-names: "Peizhi"
-  orcid: "https://orcid.org/0000-0000-0000-0000"
-title: "Gmesh: Differentiable Hybrid Renderer for 3D Gaussians and Meshes"
-version: v0.1
+type: software
+title: "GMesh: Differentiable Hybrid Renderer for 3D Gaussians and Meshes"
+version: "0.1"
 date-released: 2025-07-02
 url: "https://github.com/PeizhiYan/gmesh"
+authors:
+  - family-names: "Yan"
+    given-names: "Peizhi"
+    orcid: "0000-0002-6093-2964"
