@@ -45,7 +45,7 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-[!TIP]
+> [!TIP]
 > I have only tested the following library versions:
 > ```CUDA 11.7```, ```PyTorch 2.0.1```, ```PyTorch3D V0.7.8```, and ```gsplat v1.5.2```.
 > If you encounter any issues or unexpected results, please double-check that you have installed the correct versions.
