@@ -46,6 +46,8 @@ class GaussianRasterizer:
             S is the number of SH channels
         """
         batch_size = camera_pose.shape[0]
+        device = gaussians.device
+        bg_tensor = torch.tensor(self.bg_color).view(1, 3).repeat(batch_size, 1).to(device) # [B, 3]
 
         # get intrinsic matrix
         Ks = self.camera.get_intrinsic_matrix(batch_size=batch_size) # [B, 3, 3]
@@ -68,14 +70,15 @@ class GaussianRasterizer:
             near_plane=self.z_near,
             far_plane=self.z_far,
             tile_size=self.tile_size,
-            render_mode="RGB+D", packed=False, distributed=False
+            backgrounds=bg_tensor,              # [B, 3]
+            render_mode="RGB+ED", packed=False, distributed=False
         )
 
         rgb = render_colors[:,:,:,:3]    # [B, H, W, 3]
         depth = render_colors[:,:,:,3:4] # [B, H, W, 1]
         alpha = render_alphas[:,:,:,:1]  # [B, H, W, 1]
 
-        rgb = composite_with_bg(rgb, alpha, bg_color = self.bg_color)
+        # rgb = composite_with_bg(rgb, alpha, bg_color = self.bg_color)
 
         return rgb, depth, alpha
 

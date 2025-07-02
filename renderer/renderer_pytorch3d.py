@@ -32,9 +32,12 @@ class MeshRendererWithDepth(torch.nn.Module):
 def resize_back(image, size):
     """
     Resize input image of shape [N, H', W', C] to [N, H, W, C]
+
+    Note:   iterpolation mode `nearest` will reduce the boundary artifacts 
+            (inaccurate depth value) in the depth map. 
     """
     image = image.permute(0, 3, 1, 2) # [N, C, H, H]
-    image = F.interpolate(image, size=size, mode='bilinear', align_corners=False) # [N, C, H, W]
+    image = F.interpolate(image, size=size, mode='nearest') # [N, C, H, W]
     image = image.permute(0, 2, 3, 1)
     return image
 
@@ -57,7 +60,7 @@ class CustomMeshRenderer:
 
         self.raster_settings = RasterizationSettings(
             image_size=self.image_height,
-            blur_radius=0.0001,
+            blur_radius=0.0,
             faces_per_pixel=1
         )
 
@@ -145,7 +148,7 @@ class CustomMeshRenderer:
 
         # render image with depth map
         image, depth = mesh_renderer(pytorch3d_mesh)      # [N, H, H, C+1], [N, H, H, 1]
-        
+
         # convert depth from NDC to realworld
         depth = ndc_depth_to_real_depth(depth, znear=self.z_near, zfar=self.z_far)
         

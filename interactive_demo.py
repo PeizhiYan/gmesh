@@ -129,15 +129,15 @@ def update_image():
     elif channel == "Depth":
         depth_np = depth.detach().cpu().numpy()[0,...,0]   # [H,W]
         # Normalize to 0-1, then 3 channels
-        depth_pos = depth_np[depth_np > 0]
+        depth_pos = depth_np[depth_np > 0.1]
         if depth_pos.size > 0:
-            dmin = np.percentile(depth_pos, 1)
-            dmax = np.percentile(depth_pos, 99)
+            dmin = np.percentile(depth_pos, 5)
+            dmax = np.percentile(depth_pos, 95)
         else:
             dmin, dmax = 0.0, 1.0  # fallback if all are zero
         # dmin, dmax = np.percentile(depth_np, 1), np.percentile(depth_np, 99)
         dnorm = (depth_np - dmin) / max(1e-6, dmax - dmin)
-        dnorm = np.clip(dnorm, 0, 1)
+        dnorm = 1 - np.clip(dnorm, 0, 1) # revsese color
         display_np = np.repeat(dnorm[...,None], 3, axis=-1)
     elif channel == "Alpha":
         alpha_np = alpha.detach().cpu().numpy()[0,...,0]   # [H,W]
