@@ -92,12 +92,19 @@ def update_image():
     render_mode = dpg.get_value("render_mode_selector")  # "Mesh", "3DGS", "GMesh"
     channel     = dpg.get_value("channel_selector")      # "RGB", "Depth", "Alpha"
 
+    # Get Gaussian scale and opacity
+    scale = dpg.get_value("scale_slider")
+    opacity = dpg.get_value("opacity_slider")
+
     # Create Mesh and Gaussians
     mesh = Mesh(verts=torch.clone(vertices), faces=faces)
     mesh2 = Mesh(verts=torch.clone(vertices), faces=faces)
     gaussians = mesh_to_gaussians(mesh=mesh2, method='vertex', trainable=False)
     gaussians.colors[:,:,0] = 1.0
     gaussians.colors[:,:,1] = 1.0
+    gaussians.colors[:,:,2] = 0.2
+    gaussians.opacities = opacity * torch.ones([gaussians.num_gaussians], dtype=torch.float32).to(device)
+    gaussians.scales = scale * torch.ones([gaussians.num_gaussians, 3], dtype=torch.float32).to(device)
 
     # Add x,y,z offsets to mesh and Gaussians
     mesh.verts[:,0] += dpg.get_value("mesh_offset_x_slider")
@@ -215,6 +222,13 @@ with dpg.window(label="Mesh & 3DGS Transform", width=330, height=240, pos=(WINDO
                                                            dpg.set_value("3dgs_offset_x_slider", 0.0),
                                                            dpg.set_value("3dgs_offset_y_slider", 0.0),
                                                            dpg.set_value("3dgs_offset_z_slider", 0.0), update_image()])
+
+# 3DGS Attributes controls
+with dpg.window(label="Gaussian Attributes Controls", width=330, height=180, pos=(WINDOW_W+5, 180+130+240+20)):
+    dpg.add_slider_float(tag="opacity_slider", label="Opacity", default_value=1.0, min_value=0, max_value=1.0, callback=update_image)
+    dpg.add_slider_float(tag="scale_slider", label="Scale", default_value=0.02, min_value=0.001, max_value=0.1, callback=update_image)
+    dpg.add_button(label="Reset Gaussians", callback=lambda: [dpg.set_value("opacity_slider", 1.0), 
+                                                              dpg.set_value("scale_slider", 0.02), update_image()])
 
 
 """
