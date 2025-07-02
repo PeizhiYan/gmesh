@@ -1,4 +1,4 @@
-<h1 align="center"><b>Gmesh</b>: Differentiable Hybrid Renderer for 3D Gaussians & Mesh</h1>
+<h1 align="center"><b>Gmesh</b>: Differentiable Renderer for 3D Gaussians & Mesh</h1>
 
 <p align="center">
     <img src="./assets/GMesh-logo.png" width="500px" />
