@@ -26,6 +26,29 @@ Please see ```./examples```.
 ## Setup
 
 
+```bash
+# create conda virtual environment
+conda create --name gmesh -y python=3.10
+conda activate gmesh
+
+# install cuda toolkit
+conda install -c "nvidia/label/cuda-11.7.1" cuda-toolkit ninja
+conda install -c conda-forge cudatoolkit=11.7 cudatoolkit-dev=11.7
+
+# install PyTorch
+pip install torch==2.0.1 torchvision --index-url https://download.pytorch.org/whl/cu117
+
+# install other dependencies
+pip install -r requirements.txt
+
+# install Gmesh
+pip install -e .
+```
+
+[!TIP]
+> I have only tested the following library versions:
+> ```CUDA 11.7```, ```PyTorch 2.0.1```, ```PyTorch3D V0.7.8```, and ```gsplat v1.5.2```.
+> If you encounter any issues or unexpected results, please double-check that you have installed the correct versions.
 
 
 ## Pipeline

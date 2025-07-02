@@ -6,12 +6,12 @@
 import torch
 from gsplat.rendering import rasterization
 
-from scenes.mesh import Mesh
-from scenes.gaussians import Gaussians
-from scenes.cameras import PerspectiveCamera
-from renderer.renderer_pytorch3d import CustomMeshRenderer
-from renderer.rasterizer_gsplat import GaussianRasterizer
-from utils.image_utils import blend_rgba
+from gmesh.scenes.mesh import Mesh
+from gmesh.scenes.gaussians import Gaussians
+from gmesh.scenes.cameras import PerspectiveCamera
+from gmesh.renderer.renderer_pytorch3d import CustomMeshRenderer
+from gmesh.renderer.rasterizer_gsplat import GaussianRasterizer
+from gmesh.utils.image_utils import blend_rgba
 
 
 class GmeshRenderer:

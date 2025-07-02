@@ -6,10 +6,10 @@
 import torch
 from gsplat.rendering import rasterization
 
-from scenes.gaussians import Gaussians
-from scenes.cameras import PerspectiveCamera
+from gmesh.scenes.gaussians import Gaussians
+from gmesh.scenes.cameras import PerspectiveCamera
 # from utils.graphics_utils import build_view_matrix
-from utils.image_utils import composite_with_bg
+from gmesh.utils.image_utils import composite_with_bg
 
 class GaussianRasterizer:
 

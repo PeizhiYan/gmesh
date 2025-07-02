@@ -24,3 +24,4 @@ ipython==8.27.0
 jupyterlab
 dearpygui==2.0.0
 git+https://github.com/facebookresearch/pytorch3d.git@V0.7.8
+git+https://github.com/nerfstudio-project/gsplat.git@v1.5.2

@@ -4,7 +4,8 @@
 #
 
 import torch
-from utils.graphics_utils import compute_vertex_normals
+
+from gmesh.utils.graphics_utils import compute_vertex_normals
 
 
 def simple_phone_shading(vertices : torch.Tensor, 

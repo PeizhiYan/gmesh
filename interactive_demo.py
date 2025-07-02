@@ -3,16 +3,16 @@
 # Copyright (C) 2025
 #
 
-## Enviroment Setup
-import os, sys
-WORKING_DIR = '/home/peizhi/Documents/gmesh'
-os.chdir(WORKING_DIR) # change the working directory to the project's absolute path
-print("Current Working Directory: ", os.getcwd())
+# ## Enviroment Setup
+# import os, sys
+# WORKING_DIR = '/home/peizhi/Documents/gmesh'
+# os.chdir(WORKING_DIR) # change the working directory to the project's absolute path
+# print("Current Working Directory: ", os.getcwd())
 
 ## Computing Device
 device = 'cuda:0'
 import torch
-torch.cuda.set_device(device) # this will solve the problem that OpenGL not on the same device with torch tensors
+# torch.cuda.set_device(device)
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,13 +20,13 @@ import torch.nn.functional as F
 import time
 import dearpygui.dearpygui as dpg
 
-import utils.o3d_utils as o3d_utils
-from utils.mesh2gaussians_utils import mesh_to_gaussians
-from scenes.mesh import Mesh
-from scenes.gaussians import Gaussians
-from scenes.cameras import PerspectiveCamera, OrbitCamera
-from renderer.gmesh_renderer import GmeshRenderer
-from renderer.shader import simple_phone_shading
+import gmesh.utils.o3d_utils as o3d_utils
+from gmesh.utils.mesh2gaussians_utils import mesh_to_gaussians
+from gmesh.scenes.mesh import Mesh
+from gmesh.scenes.gaussians import Gaussians
+from gmesh.scenes.cameras import PerspectiveCamera, OrbitCamera
+from gmesh.renderer.gmesh_renderer import GmeshRenderer
+from gmesh.renderer.shader import simple_phone_shading
 
 
 

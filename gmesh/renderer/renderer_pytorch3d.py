@@ -12,10 +12,10 @@ from pytorch3d.renderer import (
 from pytorch3d.structures import Meshes
 from pytorch3d.renderer import TexturesVertex
 
-from utils.graphics_utils import *
-from utils.image_utils import composite_with_bg
-from scenes.mesh import Mesh
-from scenes.cameras import PerspectiveCamera
+from gmesh.utils.graphics_utils import *
+from gmesh.utils.image_utils import composite_with_bg
+from gmesh.scenes.mesh import Mesh
+from gmesh.scenes.cameras import PerspectiveCamera
 
 
 class MeshRendererWithDepth(torch.nn.Module):

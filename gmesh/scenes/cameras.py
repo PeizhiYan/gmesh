@@ -6,7 +6,7 @@
 import torch
 import numpy as np
 
-from utils.graphics_utils import *
+from gmesh.utils.graphics_utils import *
 
 def look_at_matrix(eye, target, up):
     # eye, target, up: [B, 3]

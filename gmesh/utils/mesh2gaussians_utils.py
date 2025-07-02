@@ -4,8 +4,9 @@
 #
 
 import torch
-from scenes.mesh import Mesh
-from scenes.gaussians import Gaussians
+
+from gmesh.scenes.mesh import Mesh
+from gmesh.scenes.gaussians import Gaussians
 
 
 def mesh_to_gaussians(mesh : Mesh, method='vertex', trainable : bool = False):
