@@ -62,7 +62,11 @@ pip install -e .
 
 ## Demo
 
-You can play with our interactive demonstration to see the rendering results: ```./interactive_demo.py```.
+You can play with our interactive demonstration to see the rendering results: 
+
+```bash
+python interactive_demo.py
+```
 
 <p align="center">
     <a href="https://www.youtube.com/watch?v=iVwSZtwr9GI">
