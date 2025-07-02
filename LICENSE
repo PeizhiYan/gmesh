@@ -19,3 +19,37 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+--------------------------------------------------
+Third-Party Libraries, Data, and Dependencies
+--------------------------------------------------
+
+This software may make use of or distribute third-party libraries, data, or 
+assets that are subject to their own separate license terms. Users are 
+responsible for complying with the terms and conditions of any third-party 
+licenses, including but not limited to those governing libraries, datasets, 
+and example assets. 
+
+In particular, the example 3D mesh used in `./assets/data/spot.obj` is sourced 
+from https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/#spot and is 
+subject to its own license agreement. The authors of this software do not claim
+ownership of this file. Please ensure you adhere to the license agreement 
+provided on the source website.
+
+--------------------------------------------------
+Disclaimer
+--------------------------------------------------
+This code is provided primarily for research purposes. For any commercial use, 
+the parts of code written by the authors are released under the MIT license; 
+however, users must obtain permissions from any third-party code or 
+dependencies used in conjunction with this software. The authors do not assume
+responsibility for any issues, damages, or liabilities that may arise from the
+use of this code. Users are solely responsible for ensuring compliance with
+legal requirements, including licensing terms and conditions, and for verifying
+that the code is suitable for their intended purposes.
+
+You can place the "Third-Party Libraries, Data, and Dependencies" and 
+"Disclaimer" sections after the main MIT text, as shown above.
+
+
+
