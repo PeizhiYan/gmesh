@@ -18,9 +18,14 @@
 - Built on gsplat and PyTorch3D, Gmesh is fully PyTorch-native.
 
 
-## Usage
+## Examples
 
-Please see ```./examples```.
+Please see ```./examples```:
+
+1. 3D Mesh Rendering via Pytorch3D: [Link](./examples/example-1%20-%20mesh%20rendering.ipynb)
+2. 3DGS via gsplat: [Link](./examples/example-2%20-%20gaussian%20splatting.ipynb)
+3. Hybrid Gaussians and Mesh Rendering via Gmesh: [Link](./examples/example-3%20-%20gmesh%20hybrid%20rendering.ipynb)
+
 
 
 ## Setup
@@ -78,12 +83,24 @@ python interactive_demo.py
 
 <p align="center">
     <a href="https://www.youtube.com/watch?v=iVwSZtwr9GI">
-        <img src="https://img.youtube.com/vi/iVwSZtwr9GI/0.jpg" alt="GMesh Demo Video" width="400px" height="auto"/>
+        <img src="https://img.youtube.com/vi/iVwSZtwr9GI/0.jpg" alt="GMesh Demo Video" width="300px" height="auto"/>
     </a>
     <br>
     <a href="https://www.youtube.com/watch?v=iVwSZtwr9GI">Watch the demo video on YouTube</a>
 </p>
 
+
+
+
+## Limitations and Todos
+
+The current version has the following main limitations:
+- 3D Gaussians' are not relightable.
+- Does not support mesh opacity.
+- Does not support mesh texture map.
+- Does not support batch rendering.
+
+-[] Support 
 
 
 ## Acknowledgement and Disclaimer
