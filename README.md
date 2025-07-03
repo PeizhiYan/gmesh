@@ -51,10 +51,18 @@ pip install -e .
 > If you encounter any issues or unexpected results, please double-check that you have installed the correct versions.
 
 
-## Pipeline
+## Design Details
+
+<p align="center">
+    <b>Pipeline</b><br>
+    <img src="./assets/pipeline.png" width="100%" />
+</p>
 
 
-
+<p align="center">
+    <b>Camera Coordinates</b><br>
+    <img src="./assets/cam_coordinates.png" width="150px" />
+</p>
 
 
 
