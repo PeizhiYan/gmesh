@@ -12,7 +12,7 @@
 ## Computing Device
 device = 'cuda:0'
 import torch
-# torch.cuda.set_device(device)
+torch.cuda.set_device(device)
 
 import matplotlib.pyplot as plt
 import numpy as np
