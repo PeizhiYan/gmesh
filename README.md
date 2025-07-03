@@ -94,13 +94,18 @@ python interactive_demo.py
 
 ## Limitations and Todos
 
-The current version has the following main limitations:
+### The current version has the following main limitations:
 - 3D Gaussians' are not relightable.
 - Does not support mesh opacity.
 - Does not support mesh texture map.
 - Does not support batch rendering.
 
--[] Support 
+### Todos:
+- [ ] Support mesh texture map.
+- [ ] Support batch (batch of camera poses) rendering.
+- [ ] Add two additional mesh to Gaussians conversion methods.
+- [ ] Add some training examples.
+
 
 
 ## Acknowledgement and Disclaimer
