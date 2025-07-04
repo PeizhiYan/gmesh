@@ -96,6 +96,7 @@ python interactive_demo.py
 
 ### The current version has the following main limitations:
 - 3D Gaussians' are not relightable.
+- The depth map of 3DGS is not accurate enough.
 - Does not support mesh opacity.
 - Does not support mesh texture map.
 - Does not support batch rendering.

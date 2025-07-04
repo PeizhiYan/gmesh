@@ -99,7 +99,7 @@ def update_image():
     # Create Mesh and Gaussians
     mesh = Mesh(verts=torch.clone(vertices), faces=faces)
     mesh2 = Mesh(verts=torch.clone(vertices), faces=faces)
-    gaussians = mesh_to_gaussians(mesh=mesh2, method='vertex', trainable=False)
+    gaussians = mesh_to_gaussians(mesh=mesh2, method='facet3', trainable=False)
     gaussians.colors[:,:,0] = 1.0
     gaussians.colors[:,:,1] = 1.0
     gaussians.colors[:,:,2] = 0.2
