@@ -97,13 +97,15 @@ python interactive_demo.py
 ## Limitations and Todos
 
 ### The current version has the following main limitations:
+- The depth map of 3DGS may not reflect the nearest depth.
+- The rendered color of overlapping Gaussians may still be visible in the final image, even when those Gaussians are occluded by a mesh.
 - 3D Gaussians' are not relightable.
-- The depth map of 3DGS is not accurate enough.
 - Does not support mesh opacity.
 - Does not support mesh texture map.
 - Does not support batch rendering.
 
 ### Todos:
+- [ ] Support z-buffering.
 - [ ] Support mesh texture map.
 - [ ] Support batch (batch of camera poses) rendering.
 - [ ] Add two additional mesh to Gaussians conversion methods.
