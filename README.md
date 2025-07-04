@@ -63,6 +63,8 @@ pip install -e .
     <img src="./assets/pipeline.png" width="100%" />
 </p>
 
+> [!WARNING]
+> Using depth maps for blending can only approximate the rendering; without a z-buffer, accurate blending is not possible.
 
 <p align="center">
     <b>Camera Coordinates</b><br>
