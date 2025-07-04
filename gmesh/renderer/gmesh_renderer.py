@@ -23,8 +23,8 @@ class GmeshRenderer:
         self.z_far = camera.z_far
         self.tile_size = tile_size      # tile size, as used in 3DGS
         self.bg_color = bg_color        # background color
-        self.mesh_renderer = CustomMeshRenderer(camera=camera) # setup mesh renderer
-        self.gaussian_rasterizer = GaussianRasterizer(camera=camera) # setup 3DGS rasterizer
+        self.mesh_renderer = CustomMeshRenderer(camera=camera, bg_color=bg_color) # setup mesh renderer
+        self.gaussian_rasterizer = GaussianRasterizer(camera=camera, bg_color=bg_color) # setup 3DGS rasterizer
 
     def render(self,
                mesh : Mesh,
