@@ -23,6 +23,20 @@ def look_at_matrix(eye, target, up):
     Rt = torch.cat([Rt, bottom], dim=1)  # [B, 4, 4]
     return Rt
 
+def invert_rt_batch(Rt: torch.Tensor) -> torch.Tensor:
+    """
+    Analytic inverse for batched rigid transforms [R|t; 0 0 0 1].
+    Rt: [B, 4, 4]
+    """
+    R = Rt[:, :3, :3]                      # [B, 3, 3]
+    t = Rt[:, :3, 3:4]                     # [B, 3, 1]
+    R_inv = R.transpose(-1, -2).contiguous()
+
+    top = torch.cat([R_inv, t_inv], dim=-1)  # [B, 3, 4]
+    bottom = torch.zeros(Rt.shape[0], 1, 4, dtype=Rt.dtype, device=Rt.device)
+    bottom[..., 0, 3] = 1
+    return torch.cat([top, bottom], dim=1)   # [B, 4, 4]
+
 
 
 class PerspectiveCamera:
@@ -47,7 +61,8 @@ class PerspectiveCamera:
             print("Error: camera_pose must have shape [B, 6], where B is the batch size, the values are yaw, pitch, roll, dx, dy, dz")
         Rt = build_view_matrix(camera_pose) # [B, 4, 4]
         Rt[:, :, [1,2]] *= -1               # OpenCV: flip y, z
-        viewmats = torch.linalg.inv(Rt)     # [B, 4, 4]
+        # viewmats = torch.linalg.inv(Rt)   # [B, 4, 4]
+        viewmats = invert_rt_batch(Rt)      # [B, 4, 4]
         return viewmats
 
 
@@ -88,5 +103,6 @@ class OrbitCamera(PerspectiveCamera):
         Rt = build_view_matrix(camera_6dof)  # [B, 4, 4]
         Rt[:, :, [1,2]] *= -1                # OpenCV/graphics convention fix
 
-        viewmats = torch.linalg.inv(Rt)      # [B, 4, 4]
+        # viewmats = torch.linalg.inv(Rt)    # [B, 4, 4]
+        viewmats = invert_rt_batch(Rt)       # [B, 4, 4]
         return viewmats
