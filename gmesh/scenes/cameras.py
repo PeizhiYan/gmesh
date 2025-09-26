@@ -31,6 +31,7 @@ def invert_rt_batch(Rt: torch.Tensor) -> torch.Tensor:
     R = Rt[:, :3, :3]                      # [B, 3, 3]
     t = Rt[:, :3, 3:4]                     # [B, 3, 1]
     R_inv = R.transpose(-1, -2).contiguous()
+    t_inv = -torch.bmm(R_inv, t)           # [B, 3, 1]
 
     top = torch.cat([R_inv, t_inv], dim=-1)  # [B, 3, 4]
     bottom = torch.zeros(Rt.shape[0], 1, 4, dtype=Rt.dtype, device=Rt.device)
