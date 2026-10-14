@@ -10,6 +10,7 @@ from gmesh.scenes.gaussians import Gaussians
 from gmesh.scenes.cameras import PerspectiveCamera
 # from utils.graphics_utils import build_view_matrix
 from gmesh.utils.image_utils import composite_with_bg
+from gmesh.renderer.rasterizer_zbuffer import rasterization_zbuffer
 
 class GaussianRasterizer:
 
@@ -82,4 +83,53 @@ class GaussianRasterizer:
 
         return rgb, depth, alpha
 
+    def rasterize_with_zbuffer(self,
+                               gaussians : Gaussians,
+                               camera_pose : torch.Tensor,
+                               depth_limits : torch.Tensor,
+                               depth_bias : float = 0.0,
+                               ):
+        """
+        Rasterize 3D Gaussians with a per-pixel depth test: at each pixel, only
+        Gaussians in front of `depth_limits` (e.g. the mesh z-buffer) are composited.
 
+        Args:
+            gaussians (Gaussians): Contains means, quats, scales, opacities, colors, sh_degree.
+            camera_pose (torch.Tensor):
+                - for PerspectiveCamera, [B,6] (yaw, pitch, roll, dx, dy, dz);
+                - for OrbitCamera, [B, 3] (elevation, azimuth, distance).
+            depth_limits (torch.Tensor): [B, H, W], camera-space depth; +inf where nothing occludes.
+            depth_bias (float): added to depth_limits, to avoid z-fighting of Gaussians on a surface.
+
+        Returns:
+            rgb (torch.Tensor):       [B, H, W, 3]  accumulated color (premultiplied, no background)
+            depth_acc (torch.Tensor): [B, H, W, 1]  accumulated depth sum_i(w_i * z_i) (not normalized)
+            alpha (torch.Tensor):     [B, H, W, 1]  accumulated opacity
+        """
+        batch_size = camera_pose.shape[0]
+
+        # get intrinsic matrix
+        Ks = self.camera.get_intrinsic_matrix(batch_size=batch_size) # [B, 3, 3]
+
+        # build view matrix
+        viewmats = self.camera.get_view_matrix(camera_pose)
+
+        rgb, depth_acc, alpha = rasterization_zbuffer(
+            means = gaussians.means,            # [N, 3]
+            quats = gaussians.quats,            # [N, 4]
+            scales = gaussians.scales,          # [N, 3]
+            opacities = gaussians.opacities,    # [N]
+            colors = gaussians.colors,          # [N, S, 3]
+            sh_degree = gaussians.sh_degree,
+            viewmats = viewmats,                # [B, 4, 4]
+            Ks = Ks,                            # [B, 3, 3]
+            width = self.image_width,
+            height = self.image_height,
+            depth_limits = depth_limits,        # [B, H, W]
+            depth_bias = depth_bias,
+            near_plane = self.z_near,
+            far_plane = self.z_far,
+            tile_size = self.tile_size,
+        )
+
+        return rgb, depth_acc, alpha

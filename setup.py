@@ -6,6 +6,7 @@ setup(
     description="Differentiable Hybrid Renderer for 3D Gaussians and Meshes",
     author="Peizhi Yan",
     packages=find_packages(),
+    package_data={"gmesh": ["renderer/csrc/*.cpp", "renderer/csrc/*.cu"]},
     install_requires=[
         # "torch",
         # "numpy",

@@ -4,7 +4,6 @@
 #
 
 import torch
-import torch.nn.functional as F
 from pytorch3d.renderer import (
     OrthographicCameras, MeshRenderer, MeshRasterizer,
     SoftPhongShader, RasterizationSettings, PointLights
@@ -27,19 +26,7 @@ class MeshRendererWithDepth(torch.nn.Module):
     def forward(self, meshes_world, **kwargs) -> torch.Tensor:
         fragments = self.rasterizer(meshes_world, **kwargs)
         images = self.shader(fragments, meshes_world, **kwargs)
-        return images, fragments.zbuf
-
-def resize_back(image, size):
-    """
-    Resize input image of shape [N, H', W', C] to [N, H, W, C]
-
-    Note:   iterpolation mode `nearest` will reduce the boundary artifacts 
-            (inaccurate depth value) in the depth map. 
-    """
-    image = image.permute(0, 3, 1, 2) # [N, C, H, H]
-    image = F.interpolate(image, size=size, mode='nearest') # [N, C, H, W]
-    image = image.permute(0, 2, 3, 1)
-    return image
+        return images, fragments
 
 def ndc_depth_to_real_depth(depth, znear, zfar):
     """
@@ -59,7 +46,7 @@ class CustomMeshRenderer:
         self.bg_color = bg_color        # background color
 
         self.raster_settings = RasterizationSettings(
-            image_size=self.image_height,
+            image_size=(self.image_height, self.image_width),
             blur_radius=0.0,
             faces_per_pixel=1
         )
@@ -142,27 +129,35 @@ class CustomMeshRenderer:
                                                                    self.z_near, self.z_far)
         verts_ndc_3d = batch_verts_clip_to_ndc(verts_clip)  # output [B, V, 3] normalized to -1.0 ~ 1.0
 
+        # PyTorch3D's NDC convention for non-square images: the shorter side
+        # spans [-1, 1] and the longer side spans [-s, s] (s = aspect ratio).
+        # Rendering at the native (H, W) keeps the mesh pixel-aligned with gsplat.
+        min_side = min(self.image_height, self.image_width)
+        ndc_scale = torch.tensor([self.image_width / min_side, self.image_height / min_side, 1.0],
+                                 dtype=verts_ndc_3d.dtype, device=verts_ndc_3d.device)
+        verts_ndc_3d = verts_ndc_3d * ndc_scale
+
+        # remap NDC z from [-1, 1] to [0, 1]: PyTorch3D discards fragments with
+        # z < 0, which would cull geometry near the camera. The map is affine,
+        # so the screen-space interpolated z-buffer stays exact.
+        verts_ndc_3d = torch.cat([verts_ndc_3d[..., :2], 0.5 * (verts_ndc_3d[..., 2:3] + 1.0)], dim=-1)
+
         # create Pytorch3D mesh object for rendering
         pytorch3d_mesh = Meshes(verts=verts_ndc_3d, faces=faces)
         pytorch3d_mesh.textures = TexturesVertex(verts_features=colors)
 
         # render image with depth map
-        image, depth = mesh_renderer(pytorch3d_mesh)      # [N, H, H, C+1], [N, H, H, 1]
+        image, fragments = mesh_renderer(pytorch3d_mesh)  # [N, H, W, C+1]
 
-        # convert depth from NDC to realworld
-        depth = ndc_depth_to_real_depth(depth, znear=self.z_near, zfar=self.z_far)
-        
-        # trick: for non-square image, we first render the iamge in square, 
-        # then resize it to match the expected size
-        image = resize_back(image, size=(self.image_height, self.image_width)) # [N, C, H, W]
-        depth = resize_back(depth, size=(self.image_height, self.image_width)) # [N, C, H, W]
+        # pixels covered by the mesh; we currently do not support mesh opacity
+        alpha = (fragments.pix_to_face[..., :1] >= 0).to(torch.float32).detach()  # [N, H, W, 1]
 
-        # separate RGB image and alpha map    
+        # convert depth from NDC to real camera-space depth, 0 where there is no mesh
+        depth = ndc_depth_to_real_depth(2.0 * fragments.zbuf[..., :1] - 1.0, znear=self.z_near, zfar=self.z_far)
+        depth = depth * alpha  # [N, H, W, 1]
+
+        # RGB image
         rgb = image[..., :3]
-        alpha = image[..., 3:4]
-
-        # we currently do not support mesh opacity
-        alpha = (alpha > 0).to(torch.float32).detach()
 
         # # mask out empty pixels
         # rgb = rgb * alpha

@@ -63,8 +63,37 @@ pip install -e .
     <img src="./assets/pipeline.png" width="100%" />
 </p>
 
-> [!WARNING]
-> Using depth maps for blending can only approximate the rendering; without a z-buffer, accurate blending is not possible.
+### Z-buffer hybrid rendering (default)
+
+The mesh is rendered first with PyTorch3D, and its z-buffer is passed to the Gaussian rasterizer. While alpha
+compositing front-to-back, every Gaussian is depth-tested against the mesh z-buffer **per pixel**: Gaussians in
+front of the mesh surface are composited, Gaussians behind it are dropped, and the opaque mesh (or the background
+where there is no mesh) is the last layer:
+
+```
+C(p) = sum_{i : z_i < D_mesh(p)} c_i * a_i * T_i  +  T_cut(p) * C_mesh(p)
+```
+
+This is implemented as a small CUDA extension (`gmesh/renderer/csrc`) that adds the depth test to gsplat's
+forward rasterization kernel. The backward pass reuses gsplat's own backward kernel, which is exactly consistent
+with the depth-limited forward pass, so gradients flow to all Gaussian attributes and to the mesh colors.
+The extension is JIT-compiled the first time it is used (this needs `nvcc` and `ninja`, see Setup, and takes about
+a minute).
+
+```python
+gmesh_renderer = GmeshRenderer(camera=camera, tile_size=16, bg_color=(1.0, 1.0, 1.0), depth_bias=0.0)
+rgb, depth, alpha = gmesh_renderer.render(mesh=mesh, gaussians=gaussians, camera_pose=camera_pose)
+```
+
+- `depth_bias`: Gaussians are depth-tested by their center depth, so Gaussians lying exactly on the mesh surface
+  are cut in half (z-fighting). A small positive bias (in scene units) moves the depth test slightly behind
+  the surface.
+- `mode='depth_blend'`: the previous behavior, which renders mesh and Gaussians separately and blends the two
+  images by comparing their depth maps.
+
+> [!NOTE]
+> The z-test is a hard per-pixel test, so it gives no gradients w.r.t. *which* Gaussians are occluded
+> (i.e. Gaussian depth relative to the mesh). Gradients w.r.t. the visible Gaussians and mesh colors are exact.
 
 <p align="center">
     <b>Camera Coordinates</b><br>
@@ -73,6 +102,19 @@ pip install -e .
 
 
 
+
+
+## Tests
+
+The tests need a CUDA GPU (the renderer tests also need PyTorch3D and open3d):
+
+```bash
+python -m pytest tests -v
+```
+
+They check the z-buffer rasterizer against gsplat (no occluder) and against a brute-force PyTorch reference
+(with an occluder), for both the forward pass and the gradients, and check that the mesh renderer is pixel- and
+depth-aligned with gsplat.
 
 
 ## Demo
@@ -97,15 +139,15 @@ python interactive_demo.py
 ## Limitations and Todos
 
 ### The current version has the following main limitations:
-- The depth map of 3DGS may not reflect the nearest depth.
-- The rendered color of overlapping Gaussians may still be visible in the final image, even when those Gaussians are occluded by a mesh.
+- Gaussians are depth-tested by their center depth (as in 3DGS sorting), so Gaussians intersecting the mesh surface are either fully in front or fully behind it at each pixel (see `depth_bias`).
+- The z-buffer mode supports one opaque mesh layer (no transparent meshes).
 - 3D Gaussians' are not relightable.
 - Does not support mesh opacity.
 - Does not support mesh texture map.
 - Does not support batch rendering.
 
 ### Todos:
-- [ ] Support z-buffering.
+- [x] Support z-buffering.
 - [ ] Support mesh texture map.
 - [ ] Support batch (batch of camera poses) rendering.
 - [ ] Add two additional mesh to Gaussians conversion methods.
