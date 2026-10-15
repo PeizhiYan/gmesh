@@ -15,7 +15,7 @@
 
 - Combining Gaussians and meshes lets you leverage the strengths of both for more flexible and realistic 3D scene rendering.
 - Gmesh supports differentiable rendering of mixed 3D Gaussians and meshes within a single scene.
-- Built on gsplat and PyTorch3D, Gmesh is fully PyTorch-native.
+- Built on gsplat and its own differentiable mesh rasterizer (no PyTorch3D needed), Gmesh is fully PyTorch-native.
 
 
 ## Examples
@@ -52,7 +52,9 @@ pip install --no-build-isolation -e .
 
 > [!TIP]
 > I have only tested the following library versions:
-> ```CUDA 11.7```, ```PyTorch 2.0.1```, ```PyTorch3D V0.7.8```, and ```gsplat v1.5.2```.
+> ```CUDA 11.7```, ```PyTorch 2.0.1```, and ```gsplat v1.5.2```.
+> PyTorch3D is no longer required (the former PyTorch3D-based mesh renderer is kept in
+> `gmesh/renderer/renderer_pytorch3d.py` for comparison only).
 > If you encounter any issues or unexpected results, please double-check that you have installed the correct versions.
 
 
@@ -63,37 +65,56 @@ pip install --no-build-isolation -e .
     <img src="./assets/pipeline.png" width="100%" />
 </p>
 
-### Z-buffer hybrid rendering (default)
+### Mesh rasterizer (no PyTorch3D)
 
-The mesh is rendered first with PyTorch3D, and its z-buffer is passed to the Gaussian rasterizer. While alpha
-compositing front-to-back, every Gaussian is depth-tested against the mesh z-buffer **per pixel**: Gaussians in
-front of the mesh surface are composited, Gaussians behind it are dropped, and the opaque mesh (or the background
-where there is no mesh) is the last layer:
+Meshes are rasterized by Gmesh's own differentiable rasterizer (`gmesh/renderer/rasterizer_mesh.py`), using exactly the
+same pinhole camera and pixel convention as gsplat:
+
+1. Triangles are binned into 16x16 tiles, and a CUDA kernel finds the nearest triangle at each pixel center (z-buffer).
+   This visibility decision is the only non-differentiable step.
+2. Barycentric coordinates, depth and vertex attributes (colors) are recomputed in PyTorch from the face ids, with
+   perspective-correct interpolation, so autograd provides gradients w.r.t. vertex positions and vertex colors.
+
+Triangles with a vertex in front of the near plane are skipped (no near-plane clipping).
+
+### Hybrid rendering (default: `mode='hybrid'`)
+
+At every pixel, each Gaussian is split along the camera ray into the part in front of the mesh surface and the part
+behind it. With the Gaussian's camera-space mean `mu` and precision `P = Sigma^-1`, and the ray direction `d`, the
+Gaussian density along the ray peaks at depth `z* = (d^T P mu) / (d^T P d)` with standard deviation
+`sigma = 1 / sqrt(d^T P d)`. The fraction in front of the mesh depth `D` is
 
 ```
-C(p) = sum_{i : z_i < D_mesh(p)} c_i * a_i * T_i  +  T_cut(p) * C_mesh(p)
+f = Phi((D - z*) / (sigma * softness))
 ```
 
-This is implemented as a small CUDA extension (`gmesh/renderer/csrc`) that adds the depth test to gsplat's
-forward rasterization kernel. The backward pass reuses gsplat's own backward kernel, which is exactly consistent
-with the depth-limited forward pass, so gradients flow to all Gaussian attributes and to the mesh colors.
-The extension is JIT-compiled the first time it is used (this needs `nvcc` and `ninja`, see Setup, and takes about
-a minute).
+The front parts (`alpha * f`) and back parts (`alpha * (1 - f)`) are alpha-composited into two layers, in the usual
+sorted 3DGS order, and combined with the opaque mesh (coverage `a_m`, color `c_m`):
+
+```
+C = C_front + T_front * (a_m * c_m + (1 - a_m) * (C_back + T_back * bg))
+```
+
+- A Gaussian crossing the mesh is cut smoothly and *along the surface* (a flat Gaussian lying on a tilted surface
+  tilts with it), instead of a per-pixel staircase. No `depth_bias` is needed for Gaussians on the surface.
+- Everything is differentiable: Gaussian means, rotations, scales (also through the split), opacities and colors,
+  and the mesh vertices (through the mesh depth and the interpolated colors).
+- `softness` scales the width of the transition (1.0 = the Gaussian's own extent along the ray; smaller is sharper).
+
+The compositing is a custom CUDA kernel (forward and backward, `gmesh/renderer/csrc/rasterize_hybrid.cu`); the
+projection, spherical harmonics and tile sorting stages are gsplat's. The CUDA extension is JIT-compiled the first
+time it is used (this needs `nvcc` and `ninja`, see Setup, and takes about a minute).
 
 ```python
-gmesh_renderer = GmeshRenderer(camera=camera, tile_size=16, bg_color=(1.0, 1.0, 1.0), depth_bias=0.0)
+gmesh_renderer = GmeshRenderer(camera=camera, tile_size=16, bg_color=(1.0, 1.0, 1.0), softness=1.0)
 rgb, depth, alpha = gmesh_renderer.render(mesh=mesh, gaussians=gaussians, camera_pose=camera_pose)
 ```
 
-- `depth_bias`: Gaussians are depth-tested by their center depth, so Gaussians lying exactly on the mesh surface
-  are cut in half (z-fighting). A small positive bias (in scene units) moves the depth test slightly behind
-  the surface.
-- `mode='depth_blend'`: the previous behavior, which renders mesh and Gaussians separately and blends the two
+Other modes, for comparison:
+- `mode='zbuffer'`: hard per-pixel test of each Gaussian's *center* depth against the mesh z-buffer
+  (`depth_bias` moves the test slightly behind the surface).
+- `mode='depth_blend'`: the original behavior, which renders mesh and Gaussians separately and blends the two
   images by comparing their depth maps.
-
-> [!NOTE]
-> The z-test is a hard per-pixel test, so it gives no gradients w.r.t. *which* Gaussians are occluded
-> (i.e. Gaussian depth relative to the mesh). Gradients w.r.t. the visible Gaussians and mesh colors are exact.
 
 <p align="center">
     <b>Camera Coordinates</b><br>
@@ -106,15 +127,15 @@ rgb, depth, alpha = gmesh_renderer.render(mesh=mesh, gaussians=gaussians, camera
 
 ## Tests
 
-The tests need a CUDA GPU (the renderer tests also need PyTorch3D and open3d):
+The tests need a CUDA GPU (the renderer tests also need open3d to read the example mesh):
 
 ```bash
 python -m pytest tests -v
 ```
 
-They check the z-buffer rasterizer against gsplat (no occluder) and against a brute-force PyTorch reference
-(with an occluder), for both the forward pass and the gradients, and check that the mesh renderer is pixel- and
-depth-aligned with gsplat.
+They check the hybrid and z-buffer rasterizers against gsplat (no mesh) and against brute-force PyTorch references
+(with a mesh), for both the forward pass and the gradients; the mesh rasterizer against a brute-force rasterizer and
+finite-difference gradients; and that the mesh is pixel- and depth-aligned with gsplat.
 
 
 ## Demo
@@ -139,8 +160,9 @@ python interactive_demo.py
 ## Limitations and Todos
 
 ### The current version has the following main limitations:
-- Gaussians are depth-tested by their center depth (as in 3DGS sorting), so Gaussians intersecting the mesh surface are either fully in front or fully behind it at each pixel (see `depth_bias`).
-- The z-buffer mode supports one opaque mesh layer (no transparent meshes).
+- Gaussians are still sorted by their center depth (as in 3DGS); only the split against the mesh is per ray.
+- One opaque mesh layer (no transparent meshes); mesh edges are not anti-aliased yet.
+- No near-plane clipping of triangles.
 - 3D Gaussians' are not relightable.
 - Does not support mesh opacity.
 - Does not support mesh texture map.
@@ -148,6 +170,10 @@ python interactive_demo.py
 
 ### Todos:
 - [x] Support z-buffering.
+- [x] Own differentiable mesh rasterizer (no PyTorch3D) and soft per-ray hybrid compositing.
+- [ ] Anti-aliased mesh edges (fractional coverage and silhouette gradients).
+- [ ] Skip Gaussians hidden behind fully covered tiles (speed).
+- [ ] Benchmark against PyTorch3D + gsplat.
 - [ ] Support mesh texture map.
 - [ ] Support batch (batch of camera poses) rendering.
 - [ ] Add two additional mesh to Gaussians conversion methods.

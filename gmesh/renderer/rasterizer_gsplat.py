@@ -11,6 +11,7 @@ from gmesh.scenes.cameras import PerspectiveCamera
 # from utils.graphics_utils import build_view_matrix
 from gmesh.utils.image_utils import composite_with_bg
 from gmesh.renderer.rasterizer_zbuffer import rasterization_zbuffer
+from gmesh.renderer.rasterizer_hybrid import rasterization_hybrid
 
 class GaussianRasterizer:
 
@@ -133,3 +134,50 @@ class GaussianRasterizer:
         )
 
         return rgb, depth_acc, alpha
+
+    def rasterize_hybrid(self,
+                         gaussians : Gaussians,
+                         camera_pose : torch.Tensor,
+                         depth_limits : torch.Tensor,
+                         coverages : torch.Tensor,
+                         softness : float = 1.0,
+                         ):
+        """
+        Rasterize 3D Gaussians into two layers, in front of and behind a mesh
+        surface, with a soft per-ray depth test (see rasterizer_hybrid.py).
+
+        Args:
+            gaussians (Gaussians): Contains means, quats, scales, opacities, colors, sh_degree.
+            camera_pose (torch.Tensor):
+                - for PerspectiveCamera, [B,6] (yaw, pitch, roll, dx, dy, dz);
+                - for OrbitCamera, [B, 3] (elevation, azimuth, distance).
+            depth_limits (torch.Tensor): [B, H, W] mesh camera-space depth; +inf where there is no mesh.
+            coverages (torch.Tensor): [B, H, W] mesh coverage in [0, 1].
+            softness (float): scales the width of the soft depth test (1.0 = the Gaussian's own extent).
+
+        Returns:
+            dict with 'front', 'back' ([B, H, W, 4]: RGB + accumulated depth) and
+            'T_front', 'T_back' ([B, H, W, 1] transmittances).
+        """
+        batch_size = camera_pose.shape[0]
+        Ks = self.camera.get_intrinsic_matrix(batch_size=batch_size) # [B, 3, 3]
+        viewmats = self.camera.get_view_matrix(camera_pose)          # [B, 4, 4]
+
+        return rasterization_hybrid(
+            means = gaussians.means,            # [N, 3]
+            quats = gaussians.quats,            # [N, 4]
+            scales = gaussians.scales,          # [N, 3]
+            opacities = gaussians.opacities,    # [N]
+            colors = gaussians.colors,          # [N, S, 3]
+            sh_degree = gaussians.sh_degree,
+            viewmats = viewmats,                # [B, 4, 4]
+            Ks = Ks,                            # [B, 3, 3]
+            width = self.image_width,
+            height = self.image_height,
+            depth_limits = depth_limits,        # [B, H, W]
+            coverages = coverages,              # [B, H, W]
+            softness = softness,
+            near_plane = self.z_near,
+            far_plane = self.z_far,
+            tile_size = self.tile_size,
+        )

@@ -21,13 +21,12 @@ Tested against gsplat v1.5.2, which this module relies on internally.
 """
 
 import math
-import os
-from functools import lru_cache
-from typing import Optional, Tuple
+from typing import Tuple
 
 import torch
 from torch import Tensor
 
+from gmesh.renderer._backend import load_extension
 from gsplat.cuda._wrapper import (
     _make_lazy_cuda_func,
     fully_fused_projection,
@@ -38,24 +37,6 @@ from gsplat.cuda._wrapper import (
 
 
 _SUPPORTED_CHANNELS = (1, 2, 3, 4, 5, 8, 9, 16, 17, 32, 33, 64, 65, 128, 129, 256, 257, 512, 513)
-
-
-@lru_cache(maxsize=None)
-def _load_extension():
-    from torch.utils.cpp_extension import load
-
-    csrc = os.path.join(os.path.dirname(os.path.abspath(__file__)), "csrc")
-    return load(
-        name="gmesh_zbuffer_rasterizer",
-        sources=[
-            os.path.join(csrc, "ext.cpp"),
-            os.path.join(csrc, "rasterize_zbuffer.cu"),
-        ],
-        extra_cflags=["-O3"],
-        # same flags as gsplat, so alpha values match gsplat's backward kernel
-        extra_cuda_cflags=["-O3", "--use_fast_math", "-std=c++17"],
-        verbose=False,
-    )
 
 
 class _RasterizeToPixelsZBuffer(torch.autograd.Function):
@@ -77,7 +58,7 @@ class _RasterizeToPixelsZBuffer(torch.autograd.Function):
         isect_offsets: Tensor,  # [C, tile_height, tile_width]
         flatten_ids: Tensor,    # [n_isects]
     ) -> Tuple[Tensor, Tensor]:
-        render_colors, render_alphas, last_ids = _load_extension().rasterize_to_pixels_zbuffer_fwd(
+        render_colors, render_alphas, last_ids = load_extension().rasterize_to_pixels_zbuffer_fwd(
             means2d,
             conics,
             colors,

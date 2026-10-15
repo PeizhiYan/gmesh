@@ -24,6 +24,64 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> rasterize_to_pixels_zbuffer_fwd(
     const at::Tensor &flatten_ids   // [n_isects]
 );
 
+std::tuple<at::Tensor, at::Tensor> rasterize_mesh_fwd(
+    const at::Tensor &face_data,    // [C, F, 9]
+    const double far_plane,
+    const int64_t image_width,
+    const int64_t image_height,
+    const int64_t tile_size,
+    const at::Tensor &tile_offsets, // [C, tile_height, tile_width]
+    const at::Tensor &flatten_ids   // [n_isects]
+);
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+rasterize_hybrid_fwd(
+    const at::Tensor &means2d,
+    const at::Tensor &conics,
+    const at::Tensor &colors,
+    const at::Tensor &opacities,
+    const at::Tensor &mus,
+    const at::Tensor &precs,
+    const at::Tensor &depth_limits,
+    const at::Tensor &coverages,
+    const at::Tensor &Ks,
+    const double softness,
+    const bool skip_covered_back,
+    const int64_t image_width,
+    const int64_t image_height,
+    const int64_t tile_size,
+    const at::Tensor &tile_offsets,
+    const at::Tensor &flatten_ids
+);
+
+std::tuple<
+    at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+rasterize_hybrid_bwd(
+    const at::Tensor &means2d,
+    const at::Tensor &conics,
+    const at::Tensor &colors,
+    const at::Tensor &opacities,
+    const at::Tensor &mus,
+    const at::Tensor &precs,
+    const at::Tensor &depth_limits,
+    const at::Tensor &coverages,
+    const at::Tensor &Ks,
+    const double softness,
+    const bool skip_covered_back,
+    const int64_t image_width,
+    const int64_t image_height,
+    const int64_t tile_size,
+    const at::Tensor &tile_offsets,
+    const at::Tensor &flatten_ids,
+    const at::Tensor &T_front,
+    const at::Tensor &T_back,
+    const at::Tensor &last_ids,
+    const at::Tensor &v_out_front,
+    const at::Tensor &v_T_front,
+    const at::Tensor &v_out_back,
+    const at::Tensor &v_T_back
+);
+
 } // namespace gmesh
 
 #define CHECK_CUDA(x) TORCH_CHECK(x.is_cuda(), #x " must be a CUDA tensor")
@@ -110,10 +168,184 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> rasterize_to_pixels_zbuffer_fwd(
     );
 }
 
+std::tuple<at::Tensor, at::Tensor> rasterize_mesh_fwd(
+    const at::Tensor &face_data,
+    const double far_plane,
+    const int64_t image_width,
+    const int64_t image_height,
+    const int64_t tile_size,
+    const at::Tensor &tile_offsets,
+    const at::Tensor &flatten_ids
+) {
+    CHECK_INPUT(face_data);
+    CHECK_INPUT(tile_offsets);
+    CHECK_INPUT(flatten_ids);
+    CHECK_FLOAT(face_data);
+    CHECK_INT(tile_offsets);
+    CHECK_INT(flatten_ids);
+    TORCH_CHECK(face_data.dim() == 3 && face_data.size(2) == 9,
+                "face_data must be [C, F, 9]");
+    TORCH_CHECK(tile_offsets.dim() == 3 && tile_offsets.size(0) == face_data.size(0),
+                "tile_offsets must be [C, tile_height, tile_width]");
+    TORCH_CHECK(tile_offsets.size(1) * tile_size >= image_height &&
+                    tile_offsets.size(2) * tile_size >= image_width,
+                "tile_offsets does not cover the image");
+    return gmesh::rasterize_mesh_fwd(
+        face_data, far_plane, image_width, image_height, tile_size,
+        tile_offsets, flatten_ids
+    );
+}
+
+static void check_hybrid_inputs(
+    const at::Tensor &means2d,
+    const at::Tensor &conics,
+    const at::Tensor &colors,
+    const at::Tensor &opacities,
+    const at::Tensor &mus,
+    const at::Tensor &precs,
+    const at::Tensor &depth_limits,
+    const at::Tensor &coverages,
+    const at::Tensor &Ks,
+    const double softness,
+    const int64_t image_width,
+    const int64_t image_height,
+    const int64_t tile_size,
+    const at::Tensor &tile_offsets,
+    const at::Tensor &flatten_ids
+) {
+    for (const at::Tensor *t : {&means2d, &conics, &colors, &opacities, &mus,
+                                &precs, &depth_limits, &coverages, &Ks}) {
+        CHECK_INPUT((*t));
+        CHECK_FLOAT((*t));
+    }
+    CHECK_INPUT(tile_offsets);
+    CHECK_INPUT(flatten_ids);
+    CHECK_INT(tile_offsets);
+    CHECK_INT(flatten_ids);
+    TORCH_CHECK(softness > 0.0, "softness must be positive");
+
+    TORCH_CHECK(means2d.dim() == 3 && means2d.size(2) == 2,
+                "means2d must be [C, N, 2] (packed mode is not supported)");
+    const int64_t C = means2d.size(0);
+    const int64_t N = means2d.size(1);
+    TORCH_CHECK(conics.sizes() == at::IntArrayRef({C, N, 3}), "conics must be [C, N, 3]");
+    TORCH_CHECK(colors.dim() == 3 && colors.size(0) == C && colors.size(1) == N,
+                "colors must be [C, N, channels]");
+    TORCH_CHECK(opacities.sizes() == at::IntArrayRef({C, N}), "opacities must be [C, N]");
+    TORCH_CHECK(mus.sizes() == at::IntArrayRef({C, N, 3}), "mus must be [C, N, 3]");
+    TORCH_CHECK(precs.sizes() == at::IntArrayRef({C, N, 6}), "precs must be [C, N, 6]");
+    TORCH_CHECK(depth_limits.sizes() == at::IntArrayRef({C, image_height, image_width}),
+                "depth_limits must be [C, image_height, image_width]");
+    TORCH_CHECK(coverages.sizes() == at::IntArrayRef({C, image_height, image_width}),
+                "coverages must be [C, image_height, image_width]");
+    TORCH_CHECK(Ks.sizes() == at::IntArrayRef({C, 3, 3}), "Ks must be [C, 3, 3]");
+    TORCH_CHECK(tile_offsets.dim() == 3 && tile_offsets.size(0) == C,
+                "tile_offsets must be [C, tile_height, tile_width]");
+    TORCH_CHECK(tile_offsets.size(1) * tile_size >= image_height &&
+                    tile_offsets.size(2) * tile_size >= image_width,
+                "tile_offsets does not cover the image");
+    TORCH_CHECK((tile_size * tile_size) % 32 == 0,
+                "tile_size * tile_size must be a multiple of 32");
+}
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+rasterize_hybrid_fwd(
+    const at::Tensor &means2d,
+    const at::Tensor &conics,
+    const at::Tensor &colors,
+    const at::Tensor &opacities,
+    const at::Tensor &mus,
+    const at::Tensor &precs,
+    const at::Tensor &depth_limits,
+    const at::Tensor &coverages,
+    const at::Tensor &Ks,
+    const double softness,
+    const bool skip_covered_back,
+    const int64_t image_width,
+    const int64_t image_height,
+    const int64_t tile_size,
+    const at::Tensor &tile_offsets,
+    const at::Tensor &flatten_ids
+) {
+    check_hybrid_inputs(
+        means2d, conics, colors, opacities, mus, precs, depth_limits, coverages,
+        Ks, softness, image_width, image_height, tile_size, tile_offsets, flatten_ids
+    );
+    return gmesh::rasterize_hybrid_fwd(
+        means2d, conics, colors, opacities, mus, precs, depth_limits, coverages,
+        Ks, softness, skip_covered_back, image_width, image_height, tile_size,
+        tile_offsets, flatten_ids
+    );
+}
+
+std::tuple<
+    at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+rasterize_hybrid_bwd(
+    const at::Tensor &means2d,
+    const at::Tensor &conics,
+    const at::Tensor &colors,
+    const at::Tensor &opacities,
+    const at::Tensor &mus,
+    const at::Tensor &precs,
+    const at::Tensor &depth_limits,
+    const at::Tensor &coverages,
+    const at::Tensor &Ks,
+    const double softness,
+    const bool skip_covered_back,
+    const int64_t image_width,
+    const int64_t image_height,
+    const int64_t tile_size,
+    const at::Tensor &tile_offsets,
+    const at::Tensor &flatten_ids,
+    const at::Tensor &T_front,
+    const at::Tensor &T_back,
+    const at::Tensor &last_ids,
+    const at::Tensor &v_out_front,
+    const at::Tensor &v_T_front,
+    const at::Tensor &v_out_back,
+    const at::Tensor &v_T_back
+) {
+    check_hybrid_inputs(
+        means2d, conics, colors, opacities, mus, precs, depth_limits, coverages,
+        Ks, softness, image_width, image_height, tile_size, tile_offsets, flatten_ids
+    );
+    for (const at::Tensor *t : {&T_front, &T_back, &v_out_front, &v_T_front,
+                                &v_out_back, &v_T_back}) {
+        CHECK_INPUT((*t));
+        CHECK_FLOAT((*t));
+    }
+    CHECK_INPUT(last_ids);
+    CHECK_INT(last_ids);
+    TORCH_CHECK(v_out_front.sizes() == v_out_back.sizes() &&
+                    v_out_front.size(-1) == colors.size(-1),
+                "gradients of the color outputs have the wrong shape");
+    return gmesh::rasterize_hybrid_bwd(
+        means2d, conics, colors, opacities, mus, precs, depth_limits, coverages,
+        Ks, softness, skip_covered_back, image_width, image_height, tile_size,
+        tile_offsets, flatten_ids, T_front, T_back, last_ids, v_out_front,
+        v_T_front, v_out_back, v_T_back
+    );
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def(
         "rasterize_to_pixels_zbuffer_fwd",
         &rasterize_to_pixels_zbuffer_fwd,
         "3DGS rasterization (forward) with a per-pixel depth limit"
+    );
+    m.def(
+        "rasterize_mesh_fwd",
+        &rasterize_mesh_fwd,
+        "Tile-based triangle visibility (nearest face id per pixel)"
+    );
+    m.def(
+        "rasterize_hybrid_fwd",
+        &rasterize_hybrid_fwd,
+        "Hybrid Gaussian/mesh compositing with a soft per-ray depth test (forward)"
+    );
+    m.def(
+        "rasterize_hybrid_bwd",
+        &rasterize_hybrid_bwd,
+        "Hybrid Gaussian/mesh compositing with a soft per-ray depth test (backward)"
     );
 }

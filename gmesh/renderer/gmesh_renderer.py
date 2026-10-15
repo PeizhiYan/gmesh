@@ -8,13 +8,14 @@ import torch
 from gmesh.scenes.mesh import Mesh
 from gmesh.scenes.gaussians import Gaussians
 from gmesh.scenes.cameras import PerspectiveCamera
-from gmesh.renderer.renderer_pytorch3d import CustomMeshRenderer
+from gmesh.renderer.rasterizer_mesh import MeshRenderer
 from gmesh.renderer.rasterizer_gsplat import GaussianRasterizer
-from gmesh.utils.image_utils import blend_rgba
+from gmesh.renderer.rasterizer_hybrid import composite_hybrid
+from gmesh.utils.image_utils import blend_rgba, composite_with_bg
 
 
 class GmeshRenderer:
-    def __init__(self, camera : PerspectiveCamera, tile_size = 16, bg_color = (1.0, 1.0, 1.0), depth_bias = 0.0):
+    def __init__(self, camera : PerspectiveCamera, tile_size = 16, bg_color = (1.0, 1.0, 1.0), depth_bias = 0.0, softness = 1.0):
         self.camera = camera
         self.image_height = camera.image_height
         self.image_width = camera.image_width
@@ -22,8 +23,9 @@ class GmeshRenderer:
         self.z_far = camera.z_far
         self.tile_size = tile_size      # tile size, as used in 3DGS
         self.bg_color = bg_color        # background color
-        self.depth_bias = depth_bias    # z-test bias, to avoid z-fighting of Gaussians lying on the mesh surface
-        self.mesh_renderer = CustomMeshRenderer(camera=camera, bg_color=bg_color) # setup mesh renderer
+        self.depth_bias = depth_bias    # 'zbuffer' mode: z-test bias, to avoid z-fighting of Gaussians lying on the mesh surface
+        self.softness = softness        # 'hybrid' mode: width of the soft depth test, relative to the Gaussians' extent
+        self.mesh_renderer = MeshRenderer(camera=camera, tile_size=tile_size, bg_color=bg_color) # setup mesh renderer
         self.gaussian_rasterizer = GaussianRasterizer(camera=camera, tile_size=tile_size, bg_color=bg_color) # setup 3DGS rasterizer
 
     def render(self,
@@ -31,8 +33,9 @@ class GmeshRenderer:
                gaussians : Gaussians,
                camera_pose : torch.Tensor,
                return_all : bool = False,
-               mode : str = 'zbuffer',
+               mode : str = 'hybrid',
                depth_bias : float = None,
+               softness : float = None,
                ):
         """
         Render the scene that contains both 3D Gaussians and 3D Mesh 
@@ -45,12 +48,17 @@ class GmeshRenderer:
                 - for OrbitCamera, [B, 3] (elevation, azimuth, distance).
             return_all (bool): whether or not to return all rendered results
             mode (str):
-                - 'zbuffer': each Gaussian is depth-tested against the mesh z-buffer
-                  per pixel while alpha compositing; the mesh is the opaque layer
-                  behind the visible Gaussians.
+                - 'hybrid': each Gaussian is split along every camera ray into the part
+                  in front of and the part behind the mesh surface (soft, per-ray depth
+                  test using the Gaussian's 3D shape); the two parts are composited in
+                  front of / behind the opaque mesh. Smooth where Gaussians cross the
+                  surface, and differentiable w.r.t. Gaussian and mesh depth.
+                - 'zbuffer': each Gaussian is depth-tested by its center depth against
+                  the mesh z-buffer per pixel (hard test).
                 - 'depth_blend': (legacy) render both separately and blend the two
                   images by comparing their depth maps.
             depth_bias (float): z-test bias for 'zbuffer' mode; defaults to self.depth_bias.
+            softness (float): soft depth test width for 'hybrid' mode; defaults to self.softness.
                 
         Returns:
             rgb (torch.Tensor):   [B, H, W, 3]
@@ -61,20 +69,35 @@ class GmeshRenderer:
             B is batch size (number of camera views to render), currently only support 1
         """
 
-        assert mode in ['zbuffer', 'depth_blend'], f"mode should be one of: ['zbuffer', 'depth_blend']"
+        assert mode in ['hybrid', 'zbuffer', 'depth_blend'], f"mode should be one of: ['hybrid', 'zbuffer', 'depth_blend']"
         if depth_bias is None:
             depth_bias = self.depth_bias
+        if softness is None:
+            softness = self.softness
 
         # render the 3D mesh
-        rgb_m, depth_m, alpha_m = self.mesh_renderer.render(mesh=mesh, camera_pose=camera_pose)
+        mesh_raster = self.mesh_renderer.rasterize(mesh=mesh, camera_pose=camera_pose)
+        alpha_m = mesh_raster['mask']                                                  # [B, H, W, 1]
+        depth_m = mesh_raster['depth']                                                 # [B, H, W, 1]
+        rgb_m = composite_with_bg(mesh_raster['attributes'], alpha_m, bg_color=self.bg_color)  # [B, H, W, 3]
 
-        if mode == 'zbuffer' and not return_all:
+        if mode in ['hybrid', 'zbuffer'] and not return_all:
             rgb_g = depth_g = alpha_g = None
         else:
             # render the 3D Gaussians on their own
             rgb_g, depth_g, alpha_g = self.gaussian_rasterizer.rasterize(gaussians=gaussians, camera_pose=camera_pose)
 
-        if mode == 'zbuffer':
+        if mode == 'hybrid':
+            # depth of the mesh surface, +inf where there is no mesh
+            depth_limits = torch.where(alpha_m > 0, depth_m, torch.full_like(depth_m, float('inf')))[..., 0]
+            layers = self.gaussian_rasterizer.rasterize_hybrid(
+                gaussians=gaussians, camera_pose=camera_pose,
+                depth_limits=depth_limits, coverages=alpha_m[..., 0], softness=softness,
+            )
+            rgb_blend, depth_blend, alpha_blend = composite_hybrid(
+                layers, mesh_raster['attributes'], depth_m, alpha_m, self.bg_color
+            )
+        elif mode == 'zbuffer':
             rgb_blend, depth_blend, alpha_blend = self.composite_with_zbuffer(
                 gaussians, camera_pose, rgb_m, depth_m, alpha_m, depth_bias
             )
