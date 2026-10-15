@@ -7,8 +7,6 @@
 Tests for the mesh rasterizer and the hybrid renderer (GmeshRenderer).
 
 Requires a CUDA GPU, gsplat v1.5.2 and open3d (to read the example mesh).
-PyTorch3D is optional: if installed, the mesh rasterizer is also compared to the
-former PyTorch3D-based renderer.
 
 Run with:
     python -m pytest tests -v
@@ -248,28 +246,6 @@ def test_mesh_is_pixel_aligned_with_gaussians(width, height):
     assert (on_surface & exact).float().mean().item() > 0.2, (on_surface & exact).float().mean().item()
 
 
-def test_matches_pytorch3d_renderer():
-    """Same coverage and depth as the former PyTorch3D-based renderer (if installed)."""
-    pytest.importorskip("pytorch3d")
-    from gmesh.scenes.mesh import Mesh
-    from gmesh.scenes.cameras import PerspectiveCamera
-    from gmesh.renderer.renderer_pytorch3d import CustomMeshRenderer
-
-    vertices, faces = load_spot()
-    mesh = Mesh(verts=vertices, faces=faces)
-    camera = PerspectiveCamera(image_width=320, image_height=160, fov_x=40, fov_y=20,
-                               z_near=0.1, z_far=100, device=DEVICE)
-    camera_pose = torch.tensor([[0.3, 0.2, 0.0, 0.0, 0.0, 7.0]], device=DEVICE)
-
-    _, depth_a, alpha_a = MeshRenderer(camera=camera, antialias=False).render(mesh=mesh, camera_pose=camera_pose)
-    _, depth_b, alpha_b = CustomMeshRenderer(camera=camera).render(mesh=mesh, camera_pose=camera_pose)
-    agree = (alpha_a == alpha_b).float().mean().item()
-    assert agree > 0.99, agree
-    both = (alpha_a > 0) & (alpha_b > 0)
-    close = ((depth_a - depth_b).abs() <= 0.01 * depth_b)[both].float().mean().item()
-    assert close > 0.98, close
-
-
 def _spot_scene(W=256, H=128):
     from gmesh.scenes.mesh import Mesh
     from gmesh.scenes.cameras import PerspectiveCamera
@@ -294,15 +270,14 @@ def _gaussians_on(vertices, faces, dz):
     return gaussians
 
 
-@pytest.mark.parametrize("mode", ["hybrid", "zbuffer"])
-def test_gaussians_behind_the_mesh_are_hidden(mode):
+def test_gaussians_behind_the_mesh_are_hidden():
     from gmesh.renderer.gmesh_renderer import GmeshRenderer
 
     vertices, faces, mesh, camera, camera_pose = _spot_scene()
     renderer = GmeshRenderer(camera=camera, tile_size=16, bg_color=(1.0, 1.0, 1.0))
     gaussians = _gaussians_on(vertices, faces, dz=-3.0)
 
-    ret = renderer.render(mesh=mesh, gaussians=gaussians, camera_pose=camera_pose, return_all=True, mode=mode)
+    ret = renderer.render(mesh=mesh, gaussians=gaussians, camera_pose=camera_pose, return_all=True)
     rgb_m, _, alpha_m = ret["mesh"]
     rgb, depth, alpha = ret["blend"]
     covered = alpha_m[..., 0] >= 1  # (partially covered edge pixels let the Gaussians behind show)
@@ -312,17 +287,23 @@ def test_gaussians_behind_the_mesh_are_hidden(mode):
     assert torch.isfinite(rgb).all() and torch.isfinite(depth).all() and torch.isfinite(alpha).all()
 
 
-def test_hybrid_equals_zbuffer_when_gaussians_are_well_in_front():
+def test_gaussians_well_in_front_are_composited_over_the_mesh():
+    """Gaussians entirely in front of the mesh: plain 3DGS composited over the mesh render."""
     from gmesh.renderer.gmesh_renderer import GmeshRenderer
+    from gmesh.renderer.rasterizer_gsplat import GaussianRasterizer
 
     vertices, faces, mesh, camera, camera_pose = _spot_scene()
     renderer = GmeshRenderer(camera=camera, tile_size=16, bg_color=(1.0, 1.0, 1.0))
     gaussians = _gaussians_on(vertices, faces, dz=3.0)
     with torch.no_grad():
-        rgb_h, depth_h, alpha_h = renderer.render(mesh=mesh, gaussians=gaussians, camera_pose=camera_pose, mode="hybrid")
-        rgb_z, depth_z, alpha_z = renderer.render(mesh=mesh, gaussians=gaussians, camera_pose=camera_pose, mode="zbuffer")
-    torch.testing.assert_close(rgb_h, rgb_z, rtol=1e-4, atol=1e-4)
-    torch.testing.assert_close(alpha_h, alpha_z, rtol=1e-4, atol=1e-4)
+        ret = renderer.render(mesh=mesh, gaussians=gaussians, camera_pose=camera_pose, return_all=True)
+        rgb, _, alpha = ret["blend"]
+        rgb_m, _, alpha_m = ret["mesh"]
+        # gsplat alone, without background (premultiplied)
+        rgb_g, _, alpha_g = GaussianRasterizer(camera=camera, bg_color=(0.0, 0.0, 0.0)).rasterize(
+            gaussians=gaussians, camera_pose=camera_pose)
+    torch.testing.assert_close(rgb, rgb_g + (1.0 - alpha_g) * rgb_m, rtol=1e-4, atol=1e-4)
+    torch.testing.assert_close(alpha, alpha_g + (1.0 - alpha_g) * alpha_m, rtol=1e-4, atol=1e-4)
 
 
 def test_hybrid_gradients_reach_gaussians_and_mesh():

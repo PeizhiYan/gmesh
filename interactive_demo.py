@@ -89,7 +89,7 @@ def update_image():
     camera_pose = torch.tensor([[elevation, azimuth, distance]], dtype=torch.float32, device=device)
 
     # Get render mode and channel to display
-    render_mode = dpg.get_value("render_mode_selector")  # "Mesh", "3DGS", "GMesh", "GMesh (z-buffer)", "GMesh (depth blend)"
+    render_mode = dpg.get_value("render_mode_selector")  # "Mesh", "3DGS", "GMesh"
     channel     = dpg.get_value("channel_selector")      # "RGB", "Depth", "Alpha"
 
     # Get Gaussian scale and opacity
@@ -119,18 +119,16 @@ def update_image():
 
     # Render
     gmesh_renderer.mesh_renderer.antialias = dpg.get_value("antialias_checkbox")
-    blend_mode = {"GMesh (z-buffer)": 'zbuffer', "GMesh (depth blend)": 'depth_blend'}.get(render_mode, 'hybrid')
-    depth_bias = dpg.get_value("depth_bias_slider")
     softness = dpg.get_value("softness_slider")
     ret_dict = gmesh_renderer.render(mesh=mesh, gaussians=gaussians, camera_pose=camera_pose, return_all=True,
-                                     mode=blend_mode, depth_bias=depth_bias, softness=softness)
+                                     softness=softness)
 
     # Retrieve results
     if render_mode == "Mesh":
         [rgb, depth, alpha] = ret_dict['mesh']
     elif render_mode == "3DGS":
         [rgb, depth, alpha] = ret_dict['3dgs']
-    else:  # "GMesh", "GMesh (z-buffer)", "GMesh (depth blend)" or default
+    else:  # "GMesh" or default
         [rgb, depth, alpha] = ret_dict['blend']
 
     # Prepare image to display
@@ -207,7 +205,7 @@ with dpg.window(label="Camera Controls", width=330, height=180, pos=(WINDOW_W+5,
 # Content controls
 with dpg.window(label="Content Controls", width=330, height=155, pos=(WINDOW_W+5, 180+10)):
     dpg.add_text("Rendering")
-    dpg.add_combo(["Mesh", "3DGS", "GMesh", "GMesh (z-buffer)", "GMesh (depth blend)"], tag="render_mode_selector", default_value="GMesh", callback=lambda: update_image())
+    dpg.add_combo(["Mesh", "3DGS", "GMesh"], tag="render_mode_selector", default_value="GMesh", callback=lambda: update_image())
     dpg.add_text("Display Channel")
     dpg.add_combo(["RGB", "Depth", "Alpha"], tag="channel_selector", default_value="RGB", callback=lambda: update_image())
     dpg.add_checkbox(label="Antialiased mesh edges", tag="antialias_checkbox", default_value=True, callback=lambda: update_image())
@@ -230,15 +228,13 @@ with dpg.window(label="Mesh & 3DGS Transform", width=330, height=240, pos=(WINDO
                                                            dpg.set_value("3dgs_offset_z_slider", 0.0), update_image()])
 
 # 3DGS Attributes controls
-with dpg.window(label="Gaussian Attributes Controls", width=330, height=210, pos=(WINDOW_W+5, 180+155+240+20)):
+with dpg.window(label="Gaussian Attributes Controls", width=330, height=180, pos=(WINDOW_W+5, 180+155+240+20)):
     dpg.add_slider_float(tag="opacity_slider", label="Opacity", default_value=1.0, min_value=0, max_value=1.0, callback=update_image)
     dpg.add_slider_float(tag="scale_slider", label="Scale", default_value=0.02, min_value=0.001, max_value=0.1, callback=update_image)
     dpg.add_slider_float(tag="softness_slider", label="Softness", default_value=1.0, min_value=0.05, max_value=3.0, callback=update_image)
-    dpg.add_slider_float(tag="depth_bias_slider", label="Z-test Bias", default_value=0.0, min_value=0.0, max_value=0.1, callback=update_image)
     dpg.add_button(label="Reset Gaussians", callback=lambda: [dpg.set_value("opacity_slider", 1.0), 
                                                               dpg.set_value("scale_slider", 0.02),
-                                                              dpg.set_value("softness_slider", 1.0),
-                                                              dpg.set_value("depth_bias_slider", 0.0), update_image()])
+                                                              dpg.set_value("softness_slider", 1.0), update_image()])
 
 
 """

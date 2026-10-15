@@ -4,7 +4,7 @@
 #
 
 """
-Differentiable triangle-mesh rasterizer (no PyTorch3D).
+Differentiable triangle-mesh rasterizer.
 
 1. Vertices are projected with the same pinhole camera (viewmat + K) and pixel
    convention (pixel centers at +0.5) as gsplat.
@@ -389,8 +389,7 @@ def rasterize_mesh(
 
 class MeshRenderer:
     """
-    Renders a Mesh with per-vertex colors (drop-in replacement of the former
-    PyTorch3D-based CustomMeshRenderer).
+    Renders a Mesh with per-vertex colors.
     """
 
     def __init__(self, camera : PerspectiveCamera, tile_size = 16, bg_color = (1.0, 1.0, 1.0), antialias = True):

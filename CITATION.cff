@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 type: software
 title: "GMesh: Differentiable Hybrid Renderer for 3D Gaussians and Meshes"
-version: "0.1"
-date-released: 2025-07-02
+version: "1.0"
+date-released: 2026-10-15
 url: "https://github.com/PeizhiYan/gmesh"
 authors:
   - family-names: "Yan"

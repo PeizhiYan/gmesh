@@ -4,7 +4,7 @@
 #
 
 """
-Benchmark the Gmesh renderers against the previous PyTorch3D + gsplat pipeline.
+Benchmark the Gmesh renderers.
 
 Scene: the example mesh (assets/data/spot.obj) with Gaussians on its surface
 ('facet3'), plus optional random Gaussians around it (some of them hidden
@@ -15,8 +15,9 @@ Usage (from the repository root):
     python benchmarks/benchmark_renderer.py --width 1920 --height 1080 --extra-gaussians 500000 --backward
 
 Reports the average time per frame (CUDA events) of each pipeline, forward only
-and, with --backward, forward + backward. PyTorch3D rows are skipped if
-PyTorch3D is not installed.
+and, with --backward, forward + backward. For reference, it also times gsplat
+alone and the mesh and Gaussians rendered separately (without any occlusion
+between them).
 """
 
 import argparse
@@ -37,7 +38,6 @@ from gmesh.renderer.gmesh_renderer import GmeshRenderer
 from gmesh.renderer.rasterizer_mesh import MeshRenderer
 from gmesh.renderer.rasterizer_gsplat import GaussianRasterizer
 from gmesh.renderer.shader import simple_phone_shading
-from gmesh.utils.image_utils import blend_rgba
 from gmesh.utils.mesh2gaussians_utils import mesh_to_gaussians
 
 
@@ -116,12 +116,6 @@ def main():
     camera_pose = torch.tensor([[0.0, 0.0, 0.0, 0.0, 0.0, 7.0]], device=device)
     bg = (1.0, 1.0, 1.0)
 
-    try:
-        from gmesh.renderer.renderer_pytorch3d import CustomMeshRenderer
-        pytorch3d_renderer = CustomMeshRenderer(camera=camera, bg_color=bg)
-    except ImportError:
-        pytorch3d_renderer = None
-
     mesh_aa = MeshRenderer(camera=camera, bg_color=bg, antialias=True)
     mesh_no_aa = MeshRenderer(camera=camera, bg_color=bg, antialias=False)
     gsplat_rasterizer = GaussianRasterizer(camera=camera, bg_color=bg)
@@ -129,23 +123,20 @@ def main():
     hybrid_no_cull = GmeshRenderer(camera=camera, bg_color=bg, antialias=True, cull_occluded=False)
     hybrid_no_aa = GmeshRenderer(camera=camera, bg_color=bg, antialias=False, cull_occluded=True)
 
-    def v01_pipeline(mesh, gaussians):
-        # the original v0.1 pipeline: PyTorch3D mesh + gsplat + depth-map blending
-        rgb_m, depth_m, alpha_m = pytorch3d_renderer.render(mesh=mesh, camera_pose=camera_pose)
+    def separate(mesh, gaussians):
+        # mesh and Gaussians rendered on their own, without any occlusion between them
+        rgb_m, depth_m, alpha_m = mesh_aa.render(mesh=mesh, camera_pose=camera_pose)
         rgb_g, depth_g, alpha_g = gsplat_rasterizer.rasterize(gaussians=gaussians, camera_pose=camera_pose)
-        return blend_rgba(rgb_m, depth_m, alpha_m, rgb_g, depth_g, alpha_g)
+        return rgb_m + rgb_g, depth_m + depth_g, alpha_m + alpha_g
 
     cases = [
         ("mesh only", "Gmesh mesh rasterizer (antialiased)", lambda m, g: mesh_aa.render(mesh=m, camera_pose=camera_pose)),
         ("mesh only", "Gmesh mesh rasterizer (no AA)", lambda m, g: mesh_no_aa.render(mesh=m, camera_pose=camera_pose)),
-        ("mesh only", "PyTorch3D (former renderer)",
-         None if pytorch3d_renderer is None else lambda m, g: pytorch3d_renderer.render(mesh=m, camera_pose=camera_pose)),
         ("3DGS only", "gsplat", lambda m, g: gsplat_rasterizer.rasterize(gaussians=g, camera_pose=camera_pose)),
-        ("hybrid", "Gmesh 'hybrid' (AA + culling)", lambda m, g: hybrid.render(mesh=m, gaussians=g, camera_pose=camera_pose)),
-        ("hybrid", "Gmesh 'hybrid' (AA, no culling)", lambda m, g: hybrid_no_cull.render(mesh=m, gaussians=g, camera_pose=camera_pose)),
-        ("hybrid", "Gmesh 'hybrid' (no AA, culling)", lambda m, g: hybrid_no_aa.render(mesh=m, gaussians=g, camera_pose=camera_pose)),
-        ("hybrid", "Gmesh 'zbuffer'", lambda m, g: hybrid.render(mesh=m, gaussians=g, camera_pose=camera_pose, mode="zbuffer")),
-        ("hybrid", "v0.1: PyTorch3D + gsplat + depth blend", None if pytorch3d_renderer is None else v01_pipeline),
+        ("hybrid", "GmeshRenderer (AA + culling, default)", lambda m, g: hybrid.render(mesh=m, gaussians=g, camera_pose=camera_pose)),
+        ("hybrid", "GmeshRenderer (AA, no culling)", lambda m, g: hybrid_no_cull.render(mesh=m, gaussians=g, camera_pose=camera_pose)),
+        ("hybrid", "GmeshRenderer (no AA, culling)", lambda m, g: hybrid_no_aa.render(mesh=m, gaussians=g, camera_pose=camera_pose)),
+        ("reference", "mesh + gsplat, separately (no occlusion)", separate),
     ]
 
     n_gaussians = gaussian_params[0].shape[0]
@@ -172,9 +163,6 @@ def main():
     print(header)
     print("-" * len(header))
     for group, name, fn in cases:
-        if fn is None:
-            print(f"{group:10s} {name:42s} {'(PyTorch3D not installed)':>13s}")
-            continue
         mesh, gaussians, leaves = make_inputs(vertices, faces, gaussian_params, requires_grad=False)
         with torch.no_grad():
             fwd = time_ms(lambda: fn(mesh, gaussians), args.iters, args.warmup)
