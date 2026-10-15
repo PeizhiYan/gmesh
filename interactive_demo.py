@@ -1,6 +1,6 @@
 #
 # Peizhi Yan
-# Copyright (C) 2025
+# Copyright (C) 2026
 #
 
 # ## Enviroment Setup
@@ -100,9 +100,9 @@ def update_image():
     mesh = Mesh(verts=torch.clone(vertices), faces=faces)
     mesh2 = Mesh(verts=torch.clone(vertices), faces=faces)
     gaussians = mesh_to_gaussians(mesh=mesh2, method='facet3', trainable=False)
-    gaussians.colors[:,:,0] = 1.0
-    gaussians.colors[:,:,1] = 1.0
-    gaussians.colors[:,:,2] = 0.2
+    # Orange Gaussians (colors are SH DC coefficients: rgb = 0.5 + C0 * sh)
+    orange_rgb = torch.tensor([1.0, 0.55, 0.1], dtype=torch.float32, device=device)
+    gaussians.colors[:,0,:] = (orange_rgb - 0.5) / 0.28209479177387814
     gaussians.opacities = opacity * torch.ones([gaussians.num_gaussians], dtype=torch.float32).to(device)
     gaussians.scales = scale * torch.ones([gaussians.num_gaussians, 3], dtype=torch.float32).to(device)
 
@@ -115,7 +115,9 @@ def update_image():
     gaussians.means[:,2] += dpg.get_value("3dgs_offset_z_slider")
 
     # Shading for visualizing mesh 
-    mesh.colors = simple_phone_shading(vertices=vertices, faces=faces)
+    mesh.colors = simple_phone_shading(vertices=vertices, faces=faces,
+                                       ambient_color=torch.tensor([0.05, 0.15, 0.35], device=device),
+                                       diffuse_color=torch.tensor([0.10, 0.35, 0.75], device=device))
 
     # Render
     gmesh_renderer.mesh_renderer.antialias = dpg.get_value("antialias_checkbox")

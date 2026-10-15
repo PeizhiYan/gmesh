@@ -1,6 +1,6 @@
 #
 # Peizhi Yan
-# Copyright (C) 2025
+# Copyright (C) 2026
 #
 
 import torch
@@ -14,8 +14,13 @@ from gmesh.renderer.rasterizer_hybrid import composite_hybrid
 
 
 class GmeshRenderer:
-    def __init__(self, camera : PerspectiveCamera, tile_size = 16, bg_color = (1.0, 1.0, 1.0), softness = 1.0,
-                 antialias = True, cull_occluded = True):
+    def __init__(self, 
+                 camera : PerspectiveCamera, 
+                 tile_size = 16, 
+                 bg_color = (1.0, 1.0, 1.0), 
+                 softness = 1.0,
+                 antialias = True, 
+                 cull_occluded = True):
         """
         Differentiable hybrid renderer for 3D Gaussians and triangle meshes.
 
