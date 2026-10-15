@@ -4,15 +4,21 @@
 #
 
 """
-Hybrid Gaussian / mesh compositing with a soft, per-ray depth test.
+Hybrid Gaussian / mesh compositing with a soft, per-pixel depth test.
 
 At pixel p (mesh depth D, mesh color c_m, mesh coverage a_m), each Gaussian is
-split along the camera ray through p:
+split at the mesh depth:
 
-    f = Phi((D - z*) / (sigma * softness))
+    f = Phi((D - z*(p)) / (sigma * softness))
 
-where z* is the depth of the Gaussian's density peak along the ray and sigma
-its standard deviation along the ray (from the Gaussian's 3D covariance).
+where z*(p) and sigma are the mean and standard deviation of the Gaussian's
+depth at pixel p, in the same local affine (EWA) approximation as its 2D splat:
+the camera-space depth conditioned on the projected position,
+
+    z*(p) = z_c + g . (p - mean2d),   g = (Sigma_uv + eps I)^-1 Sigma_uv,z
+    sigma^2 = Sigma_zz - Sigma_z,uv g
+
+so a flat Gaussian lying on a tilted surface has a depth that tilts with it.
 The part in front of the mesh (alpha * f) and the part behind it
 (alpha * (1 - f)) are alpha-composited into two layers, which are combined as
 
@@ -54,11 +60,9 @@ class _RasterizeHybrid(torch.autograd.Function):
         conics: Tensor,        # [C, N, 3]
         colors: Tensor,        # [C, N, D]
         opacities: Tensor,     # [C, N]
-        mus: Tensor,           # [C, N, 3]
-        precs: Tensor,         # [C, N, 6]
+        planes: Tensor,        # [C, N, 4] (z_c, g_x, g_y, sigma)
         depth_limits: Tensor,  # [C, H, W]
         coverages: Tensor,     # [C, H, W] (not differentiated here)
-        Ks: Tensor,            # [C, 3, 3]
         softness: float,
         skip_covered_back: bool,
         width: int,
@@ -68,11 +72,11 @@ class _RasterizeHybrid(torch.autograd.Function):
         flatten_ids: Tensor,    # [n_isects]
     ):
         out_front, T_front, out_back, T_back, last_ids = load_extension().rasterize_hybrid_fwd(
-            means2d, conics, colors, opacities, mus, precs, depth_limits, coverages, Ks,
+            means2d, conics, colors, opacities, planes, depth_limits, coverages,
             softness, skip_covered_back, width, height, tile_size, isect_offsets, flatten_ids,
         )
         ctx.save_for_backward(
-            means2d, conics, colors, opacities, mus, precs, depth_limits, coverages, Ks,
+            means2d, conics, colors, opacities, planes, depth_limits, coverages,
             isect_offsets, flatten_ids, T_front, T_back, last_ids,
         )
         ctx.softness = softness
@@ -86,22 +90,22 @@ class _RasterizeHybrid(torch.autograd.Function):
     @staticmethod
     def backward(ctx, v_out_front, v_T_front, v_out_back, v_T_back, v_last_ids):
         (
-            means2d, conics, colors, opacities, mus, precs, depth_limits, coverages, Ks,
+            means2d, conics, colors, opacities, planes, depth_limits, coverages,
             isect_offsets, flatten_ids, T_front, T_back, last_ids,
         ) = ctx.saved_tensors
 
         (
-            v_means2d, v_conics, v_colors, v_opacities, v_mus, v_precs, v_depth_limits,
+            v_means2d, v_conics, v_colors, v_opacities, v_planes, v_depth_limits,
         ) = load_extension().rasterize_hybrid_bwd(
-            means2d, conics, colors, opacities, mus, precs, depth_limits, coverages, Ks,
+            means2d, conics, colors, opacities, planes, depth_limits, coverages,
             ctx.softness, ctx.skip_covered_back, ctx.width, ctx.height, ctx.tile_size,
             isect_offsets, flatten_ids, T_front, T_back, last_ids,
             v_out_front.contiguous(), v_T_front.contiguous(),
             v_out_back.contiguous(), v_T_back.contiguous(),
         )
         return (
-            v_means2d, v_conics, v_colors, v_opacities, v_mus, v_precs, v_depth_limits,
-            None, None, None, None, None, None, None, None, None,
+            v_means2d, v_conics, v_colors, v_opacities, v_planes, v_depth_limits,
+            None, None, None, None, None, None, None, None,
         )
 
 
@@ -110,24 +114,26 @@ def rasterize_to_pixels_hybrid(
     conics: Tensor,        # [C, N, 3]
     colors: Tensor,        # [C, N, D]
     opacities: Tensor,     # [C, N]
-    mus: Tensor,           # [C, N, 3] camera-space means
-    precs: Tensor,         # [C, N, 6] camera-space precision (inverse covariance), upper triangle
+    planes: Tensor,        # [C, N, 4] per-pixel depth model (z_c, g_x, g_y, sigma), see gaussian_depth_planes
     depth_limits: Tensor,  # [C, H, W] mesh depth, +inf where there is no mesh
     coverages: Tensor,     # [C, H, W] mesh coverage in [0, 1]
-    Ks: Tensor,            # [C, 3, 3]
     image_width: int,
     image_height: int,
     tile_size: int,
     isect_offsets: Tensor,  # [C, tile_height, tile_width]
     flatten_ids: Tensor,    # [n_isects]
     softness: float = 1.0,
+    skip_covered_back: bool = True,
 ) -> Dict[str, Tensor]:
     """
     Two-layer (in front of / behind the mesh) compositing of the Gaussians.
 
     The gradients w.r.t. `coverages` are not computed here (the caller composes
-    the layers with the coverage in PyTorch). If `coverages` does not require
-    grad, the back layer is skipped where the coverage is 1.
+    the layers with the coverage in PyTorch). With `skip_covered_back`, the back
+    layer is not computed where the coverage is 1 (it is multiplied by
+    1 - coverage = 0 there). This is exact as long as the coverage has no
+    gradient at those pixels, which holds for the mesh rasterizer (coverage is
+    constant 1 inside the mesh, also with antialiasing).
 
     Returns a dict with:
         front:   accumulated colors in front of the mesh. [C, H, W, D]
@@ -145,20 +151,16 @@ def rasterize_to_pixels_hybrid(
     else:
         padded_channels = 0
 
-    skip_covered_back = not (torch.is_grad_enabled() and coverages.requires_grad)
-
     out_front, T_front, out_back, T_back, _ = _RasterizeHybrid.apply(
         means2d.contiguous(),
         conics.contiguous(),
         colors.contiguous(),
         opacities.contiguous(),
-        mus.contiguous(),
-        precs.contiguous(),
+        planes.contiguous(),
         depth_limits.float().contiguous(),
         coverages.detach().float().contiguous(),
-        Ks.float().contiguous(),
         float(softness),
-        skip_covered_back,
+        bool(skip_covered_back),
         image_width,
         image_height,
         tile_size,
@@ -187,26 +189,61 @@ def quats_to_rotmats(quats: Tensor) -> Tensor:
     ], dim=-1).view(-1, 3, 3)
 
 
-def camera_space_precisions(means: Tensor, quats: Tensor, scales: Tensor, viewmats: Tensor):
+def gaussian_depth_planes(
+    means: Tensor,     # [N, 3]
+    quats: Tensor,     # [N, 4]
+    scales: Tensor,    # [N, 3]
+    viewmats: Tensor,  # [C, 4, 4]
+    Ks: Tensor,        # [C, 3, 3]
+    eps2d: float = 0.3,
+) -> Tensor:
     """
-    Camera-space means and precision matrices (inverse covariances) of 3D Gaussians.
+    Per-pixel depth model of each Gaussian, in the local affine (EWA)
+    approximation used for its 2D splat. With the Jacobian J of the projection
+    at the camera-space mean and the camera-space covariance Sigma, the joint
+    covariance of the projected position (u, v) and the depth z is
+    [[J Sigma J^T, J Sigma e_z], [e_z^T Sigma J^T, Sigma_zz]]. The depth
+    conditioned on (u, v) = p is Gaussian with
+
+        mean  z_c + g . (p - mean2d),  g = (J Sigma J^T + eps2d I)^-1 J Sigma e_z
+        var   Sigma_zz - (J Sigma e_z) . g
+
+    (eps2d is the same low-pass dilation gsplat adds to the 2D covariance).
+    Note |g . (p - mean2d)| <= r * sqrt(Sigma_zz) for a pixel at Mahalanobis
+    distance r from the 2D splat, so the depth stays within the Gaussian's extent.
 
     Returns:
-        mus:   [C, N, 3]
-        precs: [C, N, 6] upper triangle (p00, p01, p02, p11, p12, p22)
+        planes: [C, N, 4] (z_c, g_x, g_y, sigma)
     """
     R_view = viewmats[:, :3, :3]  # [C, 3, 3]
     t_view = viewmats[:, :3, 3]   # [C, 3]
-    mus = torch.einsum("cij,nj->cni", R_view, means) + t_view[:, None, :]
+    mus = torch.einsum("cij,nj->cni", R_view, means) + t_view[:, None, :]  # [C, N, 3]
 
-    R = quats_to_rotmats(quats)                            # [N, 3, 3]
-    inv_s2 = 1.0 / scales.clamp(min=1e-8) ** 2             # [N, 3]
-    P_world = (R * inv_s2[:, None, :]) @ R.transpose(-1, -2)  # R diag(1/s^2) R^T
-    P_cam = torch.einsum("cij,njk,clk->cnil", R_view, P_world, R_view)  # R_v P R_v^T
-    iu = torch.tensor([0, 0, 0, 1, 1, 2], device=means.device)
-    ju = torch.tensor([0, 1, 2, 1, 2, 2], device=means.device)
-    precs = P_cam[..., iu, ju]
-    return mus, precs
+    R = quats_to_rotmats(quats)                                    # [N, 3, 3]
+    M = R * scales[:, None, :]                                     # R S
+    Sigma_world = M @ M.transpose(-1, -2)                          # [N, 3, 3]
+    Sigma = torch.einsum("cij,njk,clk->cnil", R_view, Sigma_world, R_view)  # [C, N, 3, 3]
+
+    x, y = mus[..., 0], mus[..., 1]
+    z = mus[..., 2].clamp(min=1e-6)
+    fx = Ks[:, 0, 0][:, None]
+    fy = Ks[:, 1, 1][:, None]
+    zeros = torch.zeros_like(z)
+    J = torch.stack([
+        torch.stack([fx / z, zeros, -fx * x / (z * z)], dim=-1),
+        torch.stack([zeros, fy / z, -fy * y / (z * z)], dim=-1),
+    ], dim=-2)                                                     # [C, N, 2, 3]
+
+    cov2d = J @ Sigma @ J.transpose(-1, -2)                        # [C, N, 2, 2]
+    cov2d = cov2d + eps2d * torch.eye(2, device=means.device, dtype=means.dtype)
+    cross = (J @ Sigma[..., :, 2:3])[..., 0]                       # [C, N, 2] Cov(uv, z)
+    a, b, d = cov2d[..., 0, 0], cov2d[..., 0, 1], cov2d[..., 1, 1]
+    det = (a * d - b * b).clamp(min=1e-12)
+    g = torch.stack([d * cross[..., 0] - b * cross[..., 1],
+                     a * cross[..., 1] - b * cross[..., 0]], dim=-1) / det[..., None]  # cov2d^-1 cross
+    var = Sigma[..., 2, 2] - (cross * g).sum(dim=-1)
+    sigma = var.clamp(min=1e-12).sqrt()
+    return torch.stack([mus[..., 2], g[..., 0], g[..., 1], sigma], dim=-1).contiguous()
 
 
 def rasterization_hybrid(
@@ -228,13 +265,19 @@ def rasterization_hybrid(
     tile_size: int = 16,
     eps2d: float = 0.3,
     radius_clip: float = 0.0,
+    cull_occluded: bool = True,
 ) -> Dict[str, Tensor]:
     """
     Mirrors gsplat.rendering.rasterization (non-packed, classic, pinhole,
     render_mode="RGB+D"), with the two-layer hybrid compositing step.
 
+    With `cull_occluded`, Gaussians that are certainly hidden behind the mesh in
+    a fully covered tile are removed from that tile's list before compositing
+    (they would contribute nothing; see `cull_occluded_intersections`).
+
     Returns the dict of `rasterize_to_pixels_hybrid`, with channels
-    [R, G, B, depth] (depth accumulated, not normalized).
+    [R, G, B, depth] (depth accumulated, not normalized), plus the number of
+    tile intersections before ('n_isects') and after ('n_isects_rendered') culling.
     """
     N = means.shape[0]
     C = viewmats.shape[0]
@@ -277,8 +320,8 @@ def rasterization_hybrid(
     # render depth as an extra channel (as gsplat's "RGB+D")
     colors = torch.cat([colors, depths[..., None]], dim=-1)  # [C, N, 4]
 
-    # 3D shape of the Gaussians in camera space, for the per-ray depth test
-    mus, precs = camera_space_precisions(means, quats, scales, viewmats)
+    # per-pixel depth model of the Gaussians, for the soft depth test
+    planes = gaussian_depth_planes(means, quats, scales, viewmats, Ks, eps2d=eps2d)
 
     # tile intersections, sorted front-to-back within each tile
     tile_width = math.ceil(width / float(tile_size))
@@ -295,16 +338,20 @@ def rasterization_hybrid(
     )
     isect_offsets = isect_offset_encode(isect_ids, C, tile_width, tile_height)
 
-    return rasterize_to_pixels_hybrid(
+    n_isects = flatten_ids.numel()
+    if cull_occluded:
+        isect_offsets, flatten_ids = cull_occluded_intersections(
+            isect_offsets, flatten_ids, depths, scales, depth_limits, coverages, tile_size, softness
+        )
+
+    layers = rasterize_to_pixels_hybrid(
         means2d,
         conics,
         colors,
         opacities,
-        mus,
-        precs,
+        planes,
         depth_limits,
         coverages,
-        Ks,
         width,
         height,
         tile_size,
@@ -312,13 +359,75 @@ def rasterization_hybrid(
         flatten_ids,
         softness=softness,
     )
+    layers["n_isects"] = n_isects
+    layers["n_isects_rendered"] = flatten_ids.numel()
+    return layers
+
+
+@torch.no_grad()
+def cull_occluded_intersections(
+    isect_offsets: Tensor,  # [C, tile_height, tile_width]
+    flatten_ids: Tensor,    # [n_isects], sorted by tile then depth
+    depths: Tensor,         # [C, N] Gaussian center depths
+    scales: Tensor,         # [N, 3]
+    depth_limits: Tensor,   # [C, H, W] mesh depth, +inf where there is no mesh
+    coverages: Tensor,      # [C, H, W]
+    tile_size: int,
+    softness: float,
+):
+    """
+    Remove Gaussians that cannot contribute in tiles fully covered by the mesh.
+
+    In a tile where every pixel has coverage 1 (no back layer) and the mesh is
+    at most at depth D_max, a Gaussian contributes only through its front part
+    alpha * Phi((D - z*) / (sigma * softness)). With s_max its largest scale,
+    sigma <= sqrt(Sigma_zz) <= s_max, and z* >= z_center - r * s_max at every
+    pixel where alpha >= 1/255, where r <= sqrt(2 ln 255) ~ 3.33 is the
+    Mahalanobis radius of its 2D footprint (see gaussian_depth_planes; we use 4).
+    If z_center - 4 s_max >= D_max + 3 s_max * softness, the front part stays
+    below alpha * Phi(-3) < 1/255 at every pixel of the tile, i.e. it is skipped
+    by the compositing anyway, so removing it does not change the result.
+    """
+    C, tile_height, tile_width = isect_offsets.shape
+    H, W = depth_limits.shape[1:]
+    n_tiles = C * tile_height * tile_width
+    n_isects = flatten_ids.numel()
+    if n_isects == 0:
+        return isect_offsets, flatten_ids
+    device = flatten_ids.device
+
+    # per tile: fully covered, and the farthest mesh depth
+    pad_h, pad_w = tile_height * tile_size - H, tile_width * tile_size - W
+    d = torch.nn.functional.pad(depth_limits.float(), (0, pad_w, 0, pad_h), value=-float("inf"))
+    cov = torch.nn.functional.pad(coverages.float(), (0, pad_w, 0, pad_h), value=1.0)
+    d_max = d.view(C, tile_height, tile_size, tile_width, tile_size).amax(dim=(2, 4)).flatten()
+    full = cov.view(C, tile_height, tile_size, tile_width, tile_size).amin(dim=(2, 4)).flatten() >= 1.0
+    full = full & torch.isfinite(d_max)
+    if not bool(full.any()):
+        return isect_offsets, flatten_ids
+
+    offsets = isect_offsets.flatten().long()
+    counts = torch.diff(torch.cat([offsets, offsets.new_tensor([n_isects])]))
+    tile_of = torch.repeat_interleave(torch.arange(n_tiles, device=device), counts)
+
+    g = flatten_ids.long()                                        # index into [C * N]
+    z = depths.detach().flatten()[g]
+    s = scales.detach().abs().amax(dim=-1).repeat(C)[g]
+    hidden = full[tile_of] & (z - 4.0 * s >= d_max[tile_of] + 3.0 * softness * s)
+    if not bool(hidden.any()):
+        return isect_offsets, flatten_ids
+
+    keep = ~hidden
+    new_counts = torch.bincount(tile_of[keep], minlength=n_tiles)
+    new_offsets = (torch.cumsum(new_counts, dim=0) - new_counts).to(torch.int32)
+    return new_offsets.view(C, tile_height, tile_width).contiguous(), flatten_ids[keep].contiguous()
 
 
 def composite_hybrid(
     layers: Dict[str, Tensor],
-    mesh_rgb: Tensor,      # [C, H, W, 3] mesh color (not composited over the background)
+    mesh_color: Tensor,    # [C, H, W, 3] mesh color premultiplied by the coverage (a_m * c_m)
     mesh_depth: Tensor,    # [C, H, W, 1]
-    mesh_alpha: Tensor,    # [C, H, W, 1] mesh coverage
+    mesh_alpha: Tensor,    # [C, H, W, 1] mesh coverage a_m
     bg_color,
 ):
     """
@@ -334,14 +443,14 @@ def composite_hybrid(
         alpha: [C, H, W, 1]
     """
     if not isinstance(bg_color, torch.Tensor):
-        bg_color = torch.tensor(bg_color, dtype=mesh_rgb.dtype, device=mesh_rgb.device)
+        bg_color = torch.tensor(bg_color, dtype=mesh_color.dtype, device=mesh_color.device)
     bg_color = bg_color.view(1, 1, 1, 3)
 
     front, T_f = layers["front"], layers["T_front"]
     back, T_b = layers["back"], layers["T_back"]
     a_m = mesh_alpha
 
-    behind_rgb = a_m * mesh_rgb + (1.0 - a_m) * (back[..., :3] + T_b * bg_color)
+    behind_rgb = mesh_color + (1.0 - a_m) * (back[..., :3] + T_b * bg_color)
     rgb = front[..., :3] + T_f * behind_rgb
     alpha = 1.0 - T_f * (1.0 - a_m) * T_b
     depth_acc = front[..., 3:4] + T_f * (a_m * mesh_depth + (1.0 - a_m) * back[..., 3:4])

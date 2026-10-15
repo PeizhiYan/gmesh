@@ -40,11 +40,9 @@ rasterize_hybrid_fwd(
     const at::Tensor &conics,
     const at::Tensor &colors,
     const at::Tensor &opacities,
-    const at::Tensor &mus,
-    const at::Tensor &precs,
+    const at::Tensor &planes,
     const at::Tensor &depth_limits,
     const at::Tensor &coverages,
-    const at::Tensor &Ks,
     const double softness,
     const bool skip_covered_back,
     const int64_t image_width,
@@ -54,18 +52,15 @@ rasterize_hybrid_fwd(
     const at::Tensor &flatten_ids
 );
 
-std::tuple<
-    at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
 rasterize_hybrid_bwd(
     const at::Tensor &means2d,
     const at::Tensor &conics,
     const at::Tensor &colors,
     const at::Tensor &opacities,
-    const at::Tensor &mus,
-    const at::Tensor &precs,
+    const at::Tensor &planes,
     const at::Tensor &depth_limits,
     const at::Tensor &coverages,
-    const at::Tensor &Ks,
     const double softness,
     const bool skip_covered_back,
     const int64_t image_width,
@@ -201,11 +196,9 @@ static void check_hybrid_inputs(
     const at::Tensor &conics,
     const at::Tensor &colors,
     const at::Tensor &opacities,
-    const at::Tensor &mus,
-    const at::Tensor &precs,
+    const at::Tensor &planes,
     const at::Tensor &depth_limits,
     const at::Tensor &coverages,
-    const at::Tensor &Ks,
     const double softness,
     const int64_t image_width,
     const int64_t image_height,
@@ -213,8 +206,8 @@ static void check_hybrid_inputs(
     const at::Tensor &tile_offsets,
     const at::Tensor &flatten_ids
 ) {
-    for (const at::Tensor *t : {&means2d, &conics, &colors, &opacities, &mus,
-                                &precs, &depth_limits, &coverages, &Ks}) {
+    for (const at::Tensor *t : {&means2d, &conics, &colors, &opacities, &planes,
+                                &depth_limits, &coverages}) {
         CHECK_INPUT((*t));
         CHECK_FLOAT((*t));
     }
@@ -232,13 +225,11 @@ static void check_hybrid_inputs(
     TORCH_CHECK(colors.dim() == 3 && colors.size(0) == C && colors.size(1) == N,
                 "colors must be [C, N, channels]");
     TORCH_CHECK(opacities.sizes() == at::IntArrayRef({C, N}), "opacities must be [C, N]");
-    TORCH_CHECK(mus.sizes() == at::IntArrayRef({C, N, 3}), "mus must be [C, N, 3]");
-    TORCH_CHECK(precs.sizes() == at::IntArrayRef({C, N, 6}), "precs must be [C, N, 6]");
+    TORCH_CHECK(planes.sizes() == at::IntArrayRef({C, N, 4}), "planes must be [C, N, 4]");
     TORCH_CHECK(depth_limits.sizes() == at::IntArrayRef({C, image_height, image_width}),
                 "depth_limits must be [C, image_height, image_width]");
     TORCH_CHECK(coverages.sizes() == at::IntArrayRef({C, image_height, image_width}),
                 "coverages must be [C, image_height, image_width]");
-    TORCH_CHECK(Ks.sizes() == at::IntArrayRef({C, 3, 3}), "Ks must be [C, 3, 3]");
     TORCH_CHECK(tile_offsets.dim() == 3 && tile_offsets.size(0) == C,
                 "tile_offsets must be [C, tile_height, tile_width]");
     TORCH_CHECK(tile_offsets.size(1) * tile_size >= image_height &&
@@ -254,11 +245,9 @@ rasterize_hybrid_fwd(
     const at::Tensor &conics,
     const at::Tensor &colors,
     const at::Tensor &opacities,
-    const at::Tensor &mus,
-    const at::Tensor &precs,
+    const at::Tensor &planes,
     const at::Tensor &depth_limits,
     const at::Tensor &coverages,
-    const at::Tensor &Ks,
     const double softness,
     const bool skip_covered_back,
     const int64_t image_width,
@@ -268,28 +257,25 @@ rasterize_hybrid_fwd(
     const at::Tensor &flatten_ids
 ) {
     check_hybrid_inputs(
-        means2d, conics, colors, opacities, mus, precs, depth_limits, coverages,
-        Ks, softness, image_width, image_height, tile_size, tile_offsets, flatten_ids
+        means2d, conics, colors, opacities, planes, depth_limits, coverages,
+        softness, image_width, image_height, tile_size, tile_offsets, flatten_ids
     );
     return gmesh::rasterize_hybrid_fwd(
-        means2d, conics, colors, opacities, mus, precs, depth_limits, coverages,
-        Ks, softness, skip_covered_back, image_width, image_height, tile_size,
+        means2d, conics, colors, opacities, planes, depth_limits, coverages,
+        softness, skip_covered_back, image_width, image_height, tile_size,
         tile_offsets, flatten_ids
     );
 }
 
-std::tuple<
-    at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
 rasterize_hybrid_bwd(
     const at::Tensor &means2d,
     const at::Tensor &conics,
     const at::Tensor &colors,
     const at::Tensor &opacities,
-    const at::Tensor &mus,
-    const at::Tensor &precs,
+    const at::Tensor &planes,
     const at::Tensor &depth_limits,
     const at::Tensor &coverages,
-    const at::Tensor &Ks,
     const double softness,
     const bool skip_covered_back,
     const int64_t image_width,
@@ -306,8 +292,8 @@ rasterize_hybrid_bwd(
     const at::Tensor &v_T_back
 ) {
     check_hybrid_inputs(
-        means2d, conics, colors, opacities, mus, precs, depth_limits, coverages,
-        Ks, softness, image_width, image_height, tile_size, tile_offsets, flatten_ids
+        means2d, conics, colors, opacities, planes, depth_limits, coverages,
+        softness, image_width, image_height, tile_size, tile_offsets, flatten_ids
     );
     for (const at::Tensor *t : {&T_front, &T_back, &v_out_front, &v_T_front,
                                 &v_out_back, &v_T_back}) {
@@ -320,8 +306,8 @@ rasterize_hybrid_bwd(
                     v_out_front.size(-1) == colors.size(-1),
                 "gradients of the color outputs have the wrong shape");
     return gmesh::rasterize_hybrid_bwd(
-        means2d, conics, colors, opacities, mus, precs, depth_limits, coverages,
-        Ks, softness, skip_covered_back, image_width, image_height, tile_size,
+        means2d, conics, colors, opacities, planes, depth_limits, coverages,
+        softness, skip_covered_back, image_width, image_height, tile_size,
         tile_offsets, flatten_ids, T_front, T_back, last_ids, v_out_front,
         v_T_front, v_out_back, v_T_back
     );

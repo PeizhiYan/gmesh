@@ -120,6 +120,84 @@ def test_mesh_rasterizer_gradients():
     assert torch.autograd.gradcheck(fn, (v, c), eps=1e-6, atol=1e-6, rtol=1e-4)
 
 
+def _supersampled_coverage(verts, faces, viewmats, Ks, W, H, ss=8):
+    """Box-filtered coverage from a non-antialiased render at ss x the resolution."""
+    Ks_ss = Ks.clone()
+    Ks_ss[:, :2, :] *= ss
+    out = rasterize_mesh(verts, faces, viewmats, Ks_ss, W * ss, H * ss)
+    return out["mask"].view(-1, H, ss, W, ss, 1).mean(dim=(2, 4))
+
+
+def test_antialiasing_matches_supersampling():
+    W, H = 83, 61
+    verts, faces = _random_mesh(F_=30, seed=1)
+    viewmats, Ks = _camera(W, H)
+    ref = _supersampled_coverage(verts, faces, viewmats, Ks, W, H)
+    aa = rasterize_mesh(verts, faces, viewmats, Ks, W, H, antialias=True)
+    err_aa = (aa["alpha"] - ref).abs().mean().item()
+    err_binary = (aa["mask"] - ref).abs().mean().item()
+    assert err_aa < 0.5 * err_binary, (err_aa, err_binary)
+    assert ((aa["alpha"] > 0) & (aa["alpha"] < 1)).any()
+
+
+def test_antialiasing_keeps_the_inside_of_a_connected_mesh():
+    """Internal edges of a connected surface are not silhouettes: no change inside."""
+    W, H = 64, 48
+    n = 10
+    xs = torch.linspace(-0.6, 0.6, n + 1, device=DEVICE)
+    gy, gx = torch.meshgrid(xs * 0.8, xs, indexing="ij")
+    z = 3.0 + 0.1 * torch.sin(3 * gx) * torch.cos(2 * gy)
+    verts = torch.stack([gx, gy, z], dim=-1).reshape(-1, 3)
+    idx = torch.arange((n + 1) * (n + 1), device=DEVICE).view(n + 1, n + 1)
+    a, b, c, d = idx[:-1, :-1].flatten(), idx[:-1, 1:].flatten(), idx[1:, :-1].flatten(), idx[1:, 1:].flatten()
+    faces = torch.cat([torch.stack([a, b, d], -1), torch.stack([a, d, c], -1)])
+    colors = torch.rand(verts.shape[0], 3, device=DEVICE)
+    viewmats, Ks = _camera(W, H)
+    out = rasterize_mesh(verts, faces, viewmats, Ks, W, H, attributes=colors, antialias=True)
+
+    m = out["mask"][0, ..., 0] > 0
+    interior = m.clone()
+    for shift in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        interior &= torch.roll(m, shift, (0, 1))
+    assert interior.sum().item() > 100
+    assert (out["alpha"][0, ..., 0][interior] == 1).all()
+    torch.testing.assert_close(out["color"][0][interior], out["attributes"][0][interior])
+
+
+def test_antialiasing_gradients():
+    """Silhouette gradients: autograd matches finite differences (double precision)."""
+    W, H = 40, 32
+    dtype = torch.float64
+    verts = torch.tensor([
+        [-0.71, -0.43, 3.0], [0.63, -0.21, 3.2], [-0.05, 0.52, 2.9],
+        [-0.31, -0.12, 2.5], [0.33, 0.07, 2.6], [0.02, 0.41, 2.4],
+    ], dtype=dtype, device=DEVICE)
+    faces = torch.tensor([[0, 1, 2], [3, 4, 5]], device=DEVICE)
+    colors = torch.rand(6, 3, dtype=dtype, device=DEVICE)
+    viewmats = torch.eye(4, dtype=dtype, device=DEVICE)[None]
+    Ks = torch.tensor([[60.0, 0.0, W / 2], [0.0, 60.0, H / 2], [0.0, 0.0, 1.0]], dtype=dtype, device=DEVICE)[None]
+    weights = torch.rand(1, H, W, 5, dtype=dtype, device=DEVICE)
+
+    def fn(v, c):
+        out = rasterize_mesh(v, faces, viewmats, Ks, W, H, attributes=c, antialias=True)
+        return (torch.cat([out["alpha"], out["color"], out["depth"]], dim=-1) * weights).sum()
+
+    v = verts.clone().requires_grad_(True)
+    c = colors.clone().requires_grad_(True)
+    assert torch.autograd.gradcheck(fn, (v, c), eps=1e-7, atol=1e-5, rtol=1e-4)
+
+    # the total coverage follows the triangle area
+    v1 = verts[:3].clone().requires_grad_(True)
+    out = rasterize_mesh(v1, faces[:1], viewmats, Ks, W, H, antialias=True)
+    out["alpha"].sum().backward()
+    v2 = verts[:3].clone().requires_grad_(True)
+    uv = project_vertices(v2, viewmats, Ks)[1][0]
+    area = 0.5 * ((uv[1, 0] - uv[0, 0]) * (uv[2, 1] - uv[0, 1]) - (uv[1, 1] - uv[0, 1]) * (uv[2, 0] - uv[0, 0])).abs()
+    area.backward()
+    cosine = F.cosine_similarity(v1.grad.flatten(), v2.grad.flatten(), dim=0).item()
+    assert cosine > 0.98, cosine
+
+
 @pytest.mark.parametrize("width,height", [(320, 160), (160, 320)])
 def test_mesh_is_pixel_aligned_with_gaussians(width, height):
     """
@@ -183,7 +261,7 @@ def test_matches_pytorch3d_renderer():
                                z_near=0.1, z_far=100, device=DEVICE)
     camera_pose = torch.tensor([[0.3, 0.2, 0.0, 0.0, 0.0, 7.0]], device=DEVICE)
 
-    _, depth_a, alpha_a = MeshRenderer(camera=camera).render(mesh=mesh, camera_pose=camera_pose)
+    _, depth_a, alpha_a = MeshRenderer(camera=camera, antialias=False).render(mesh=mesh, camera_pose=camera_pose)
     _, depth_b, alpha_b = CustomMeshRenderer(camera=camera).render(mesh=mesh, camera_pose=camera_pose)
     agree = (alpha_a == alpha_b).float().mean().item()
     assert agree > 0.99, agree
@@ -227,10 +305,10 @@ def test_gaussians_behind_the_mesh_are_hidden(mode):
     ret = renderer.render(mesh=mesh, gaussians=gaussians, camera_pose=camera_pose, return_all=True, mode=mode)
     rgb_m, _, alpha_m = ret["mesh"]
     rgb, depth, alpha = ret["blend"]
-    covered = alpha_m[..., 0] > 0
+    covered = alpha_m[..., 0] >= 1  # (partially covered edge pixels let the Gaussians behind show)
     torch.testing.assert_close(rgb[covered], rgb_m[covered])
     # but visible next to the mesh
-    assert (rgb[~covered] - 1.0).abs().max().item() > 0.1
+    assert (rgb[alpha_m[..., 0] == 0] - 1.0).abs().max().item() > 0.1
     assert torch.isfinite(rgb).all() and torch.isfinite(depth).all() and torch.isfinite(alpha).all()
 
 

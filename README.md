@@ -75,17 +75,24 @@ same pinhole camera and pixel convention as gsplat:
 2. Barycentric coordinates, depth and vertex attributes (colors) are recomputed in PyTorch from the face ids, with
    perspective-correct interpolation, so autograd provides gradients w.r.t. vertex positions and vertex colors.
 
+3. Edges are antialiased analytically (as in nvdiffrast): for every pair of neighboring pixels that sees a geometric
+   discontinuity (a silhouette), the position where the front triangle's edge crosses between the two pixel centers
+   gives a fractional coverage (and blends colors over a farther surface). This yields smooth silhouettes and
+   gradients w.r.t. the silhouette vertex positions. Internal edges of a connected surface are left untouched.
+
 Triangles with a vertex in front of the near plane are skipped (no near-plane clipping).
 
 ### Hybrid rendering (default: `mode='hybrid'`)
 
-At every pixel, each Gaussian is split along the camera ray into the part in front of the mesh surface and the part
-behind it. With the Gaussian's camera-space mean `mu` and precision `P = Sigma^-1`, and the ray direction `d`, the
-Gaussian density along the ray peaks at depth `z* = (d^T P mu) / (d^T P d)` with standard deviation
-`sigma = 1 / sqrt(d^T P d)`. The fraction in front of the mesh depth `D` is
+At every pixel, each Gaussian is split at the mesh surface into the part in front of it and the part behind it.
+The Gaussian's depth at pixel `p` uses the same local affine (EWA) approximation as its 2D splat: the camera-space
+depth conditioned on the projected position is Gaussian with mean `z*(p) = z_c + g . (p - mean2d)` and standard
+deviation `sigma`, where `g = (Sigma_uv + eps I)^-1 Sigma_uv,z` and `sigma^2 = Sigma_zz - Sigma_z,uv g` come from the
+projected 3D covariance (so a flat Gaussian lying on a tilted surface has a depth that tilts with it). The fraction
+in front of the mesh depth `D` is
 
 ```
-f = Phi((D - z*) / (sigma * softness))
+f = Phi((D - z*(p)) / (sigma * softness))
 ```
 
 The front parts (`alpha * f`) and back parts (`alpha * (1 - f)`) are alpha-composited into two layers, in the usual
@@ -99,14 +106,20 @@ C = C_front + T_front * (a_m * c_m + (1 - a_m) * (C_back + T_back * bg))
   tilts with it), instead of a per-pixel staircase. No `depth_bias` is needed for Gaussians on the surface.
 - Everything is differentiable: Gaussian means, rotations, scales (also through the split), opacities and colors,
   and the mesh vertices (through the mesh depth and the interpolated colors).
-- `softness` scales the width of the transition (1.0 = the Gaussian's own extent along the ray; smaller is sharper).
+- `softness` scales the width of the transition (1.0 = the Gaussian's own depth extent; smaller is sharper).
+- With antialiased mesh edges, the coverage `a_m` is fractional at silhouettes, so Gaussians behind the mesh fade
+  out smoothly at its outline instead of being cut along it.
+- `cull_occluded=True` removes Gaussians that are certainly hidden behind the mesh in fully covered 16x16 tiles
+  before compositing. This does not change the result (they would be skipped anyway) and saves time in scenes
+  where the mesh hides many Gaussians.
 
 The compositing is a custom CUDA kernel (forward and backward, `gmesh/renderer/csrc/rasterize_hybrid.cu`); the
-projection, spherical harmonics and tile sorting stages are gsplat's. The CUDA extension is JIT-compiled the first
+projection, spherical harmonics and tile sorting stages are gsplat's, and the depth model is computed in PyTorch. The CUDA extension is JIT-compiled the first
 time it is used (this needs `nvcc` and `ninja`, see Setup, and takes about a minute).
 
 ```python
-gmesh_renderer = GmeshRenderer(camera=camera, tile_size=16, bg_color=(1.0, 1.0, 1.0), softness=1.0)
+gmesh_renderer = GmeshRenderer(camera=camera, tile_size=16, bg_color=(1.0, 1.0, 1.0), softness=1.0,
+                               antialias=True, cull_occluded=True)
 rgb, depth, alpha = gmesh_renderer.render(mesh=mesh, gaussians=gaussians, camera_pose=camera_pose)
 ```
 
@@ -138,6 +151,17 @@ They check the hybrid and z-buffer rasterizers against gsplat (no mesh) and agai
 finite-difference gradients; and that the mesh is pixel- and depth-aligned with gsplat.
 
 
+## Benchmark
+
+```bash
+python benchmarks/benchmark_renderer.py --width 1024 --height 768 --extra-gaussians 200000 --backward
+```
+
+Times (per frame, forward and forward + backward) the Gmesh mesh rasterizer, gsplat alone, the hybrid modes (with
+and without antialiasing / occlusion culling), and, if PyTorch3D is installed, the former PyTorch3D mesh renderer
+and the original v0.1 pipeline (PyTorch3D + gsplat + depth blending).
+
+
 ## Demo
 
 You can play with our interactive demonstration to see the rendering results: 
@@ -160,8 +184,9 @@ python interactive_demo.py
 ## Limitations and Todos
 
 ### The current version has the following main limitations:
-- Gaussians are still sorted by their center depth (as in 3DGS); only the split against the mesh is per ray.
-- One opaque mesh layer (no transparent meshes); mesh edges are not anti-aliased yet.
+- Gaussians are still sorted by their center depth (as in 3DGS); only the split against the mesh is per pixel.
+- One opaque mesh layer (no transparent meshes).
+- Edge antialiasing is a per-axis 1D approximation (exact for straight edges away from corners).
 - No near-plane clipping of triangles.
 - 3D Gaussians' are not relightable.
 - Does not support mesh opacity.
@@ -171,9 +196,9 @@ python interactive_demo.py
 ### Todos:
 - [x] Support z-buffering.
 - [x] Own differentiable mesh rasterizer (no PyTorch3D) and soft per-ray hybrid compositing.
-- [ ] Anti-aliased mesh edges (fractional coverage and silhouette gradients).
-- [ ] Skip Gaussians hidden behind fully covered tiles (speed).
-- [ ] Benchmark against PyTorch3D + gsplat.
+- [x] Anti-aliased mesh edges (fractional coverage and silhouette gradients).
+- [x] Skip Gaussians hidden behind fully covered tiles (speed).
+- [x] Benchmark against PyTorch3D + gsplat.
 - [ ] Support mesh texture map.
 - [ ] Support batch (batch of camera poses) rendering.
 - [ ] Add two additional mesh to Gaussians conversion methods.

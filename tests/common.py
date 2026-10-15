@@ -13,7 +13,7 @@ import torch
 
 from gsplat.cuda._wrapper import fully_fused_projection, isect_offset_encode, isect_tiles
 
-from gmesh.renderer.rasterizer_hybrid import camera_space_precisions
+from gmesh.renderer.rasterizer_hybrid import gaussian_depth_planes
 
 
 DEVICE = "cuda"
@@ -53,13 +53,13 @@ def random_scene(N=64, W=70, H=45, C=2, tile_size=16, channels=3, seed=0):
     )
     isect_offsets = isect_offset_encode(isect_ids, C, tile_width, tile_height)
 
-    # camera-space 3D shape of the Gaussians (for the hybrid rasterizer)
-    mus, precs = camera_space_precisions(means, quats, scales, viewmats)
+    # per-pixel depth model of the Gaussians (for the hybrid rasterizer)
+    planes = gaussian_depth_planes(means, quats, scales, viewmats, Ks)
 
     return dict(
         means2d=means2d.detach(), conics=conics.detach(), colors=colors,
         opacities=opacities.repeat(C, 1), depths=depths.detach(),
-        mus=mus.detach(), precs=precs.detach(), Ks=Ks, viewmats=viewmats,
+        planes=planes.detach(), Ks=Ks, viewmats=viewmats,
         isect_offsets=isect_offsets, flatten_ids=flatten_ids,
         W=W, H=H, C=C, N=N, tile_size=tile_size,
     )

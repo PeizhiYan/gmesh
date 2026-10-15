@@ -118,6 +118,7 @@ def update_image():
     mesh.colors = simple_phone_shading(vertices=vertices, faces=faces)
 
     # Render
+    gmesh_renderer.mesh_renderer.antialias = dpg.get_value("antialias_checkbox")
     blend_mode = {"GMesh (z-buffer)": 'zbuffer', "GMesh (depth blend)": 'depth_blend'}.get(render_mode, 'hybrid')
     depth_bias = dpg.get_value("depth_bias_slider")
     softness = dpg.get_value("softness_slider")
@@ -204,14 +205,15 @@ with dpg.window(label="Camera Controls", width=330, height=180, pos=(WINDOW_W+5,
     dpg.add_text("FPS: 0.00", tag="fps_text")
 
 # Content controls
-with dpg.window(label="Content Controls", width=330, height=130, pos=(WINDOW_W+5, 180+10)):
+with dpg.window(label="Content Controls", width=330, height=155, pos=(WINDOW_W+5, 180+10)):
     dpg.add_text("Rendering")
     dpg.add_combo(["Mesh", "3DGS", "GMesh", "GMesh (z-buffer)", "GMesh (depth blend)"], tag="render_mode_selector", default_value="GMesh", callback=lambda: update_image())
     dpg.add_text("Display Channel")
     dpg.add_combo(["RGB", "Depth", "Alpha"], tag="channel_selector", default_value="RGB", callback=lambda: update_image())
+    dpg.add_checkbox(label="Antialiased mesh edges", tag="antialias_checkbox", default_value=True, callback=lambda: update_image())
 
 # Mesh/Gaussian translation window
-with dpg.window(label="Mesh & 3DGS Transform", width=330, height=240, pos=(WINDOW_W+5, 180+130+15)):
+with dpg.window(label="Mesh & 3DGS Transform", width=330, height=240, pos=(WINDOW_W+5, 180+155+15)):
     dpg.add_text("Translate Mesh:")
     dpg.add_slider_float(tag="mesh_offset_x_slider", label="dx", default_value=0.0, min_value=-2.0, max_value=2.0, callback=update_image)
     dpg.add_slider_float(tag="mesh_offset_y_slider", label="dy", default_value=0.0, min_value=-2.0, max_value=2.0, callback=update_image)
@@ -228,7 +230,7 @@ with dpg.window(label="Mesh & 3DGS Transform", width=330, height=240, pos=(WINDO
                                                            dpg.set_value("3dgs_offset_z_slider", 0.0), update_image()])
 
 # 3DGS Attributes controls
-with dpg.window(label="Gaussian Attributes Controls", width=330, height=210, pos=(WINDOW_W+5, 180+130+240+20)):
+with dpg.window(label="Gaussian Attributes Controls", width=330, height=210, pos=(WINDOW_W+5, 180+155+240+20)):
     dpg.add_slider_float(tag="opacity_slider", label="Opacity", default_value=1.0, min_value=0, max_value=1.0, callback=update_image)
     dpg.add_slider_float(tag="scale_slider", label="Scale", default_value=0.02, min_value=0.001, max_value=0.1, callback=update_image)
     dpg.add_slider_float(tag="softness_slider", label="Softness", default_value=1.0, min_value=0.05, max_value=3.0, callback=update_image)

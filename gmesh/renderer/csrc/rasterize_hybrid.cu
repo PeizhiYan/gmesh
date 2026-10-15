@@ -2,17 +2,19 @@
 // Peizhi Yan
 // Copyright (C) 2025
 //
-// Hybrid Gaussian / mesh compositing with a soft, per-ray depth test.
+// Hybrid Gaussian / mesh compositing with a soft, per-pixel depth test.
 //
 // The tile/batch structure follows gsplat v1.5.2 (Apache-2.0), see
 // gsplat/cuda/csrc/RasterizeToPixels3DGS{Fwd,Bwd}.cu.
 //
-// At pixel p, with mesh depth D(p), every Gaussian is split along the camera
-// ray through p. With the Gaussian's camera-space mean mu and precision
-// P = Sigma^-1, and the ray direction d (d.z = 1), the Gaussian density along
-// the ray peaks at depth z* = b / a with std sigma = 1 / sqrt(a), where
-// a = d^T P d and b = d^T P mu. The fraction of the Gaussian in front of the
-// mesh is
+// Each Gaussian's depth at pixel p uses the same local affine (EWA)
+// approximation as its 2D splat: the depth z conditioned on the projected
+// position (u, v) = p is Gaussian with
+//
+//     z*(p) = z_c + g . (p - mean2d),   std sigma
+//
+// (g, sigma from the projected 3D covariance, computed in PyTorch). With the
+// mesh depth D(p), the fraction of the Gaussian in front of the mesh is
 //
 //     f = Phi(s),   s = (D - z*) / (sigma * softness)
 //
@@ -24,7 +26,7 @@
 //
 // Pixels without mesh (D = +inf) have f = 1 and an empty back layer, i.e.
 // plain 3DGS. The backward pass gives gradients for all Gaussian quantities,
-// including mu and P (through f), and for the mesh depth D.
+// including the depth plane (z_c, g, sigma), and for the mesh depth D.
 //
 
 #include <ATen/ATen.h>
@@ -44,24 +46,13 @@ namespace gmesh {
 #define GMESH_HYBRID_ALPHA_THRESHOLD (1.f / 255.f)
 #define GMESH_HYBRID_T_EPS 1e-4f
 
-// ray parameters of a Gaussian: a = d^T P d, b = d^T P mu, Pd = P d
-// P is stored as its upper triangle [p00, p01, p02, p11, p12, p22]
-__device__ inline void gaussian_ray_params(
-    const float *P, const float3 mu, const float3 d, float &a, float &b, float3 &Pd
+// depth plane of a Gaussian: [z_c, g_x, g_y, sigma]
+// delta = mean2d - pixel center, so z* = z_c - g . delta
+__device__ inline float gaussian_split_offset(
+    const float *plane, const float2 delta, const float D, const float inv_softness
 ) {
-    Pd.x = P[0] * d.x + P[1] * d.y + P[2] * d.z;
-    Pd.y = P[1] * d.x + P[3] * d.y + P[4] * d.z;
-    Pd.z = P[2] * d.x + P[4] * d.y + P[5] * d.z;
-    a = d.x * Pd.x + d.y * Pd.y + d.z * Pd.z;
-    b = mu.x * Pd.x + mu.y * Pd.y + mu.z * Pd.z;
-}
-
-// normalized offset of the mesh depth w.r.t. the Gaussian along the ray
-__device__ inline float gaussian_ray_offset(
-    const float a, const float b, const float D, const float inv_softness
-) {
-    const float sa = sqrtf(a);
-    return (D * sa - b / sa) * inv_softness;
+    const float z_star = plane[0] - (plane[1] * delta.x + plane[2] * delta.y);
+    return (D - z_star) * inv_softness / plane[3];
 }
 
 template <uint32_t CDIM>
@@ -73,11 +64,9 @@ __global__ void rasterize_hybrid_fwd_kernel(
     const float3 *__restrict__ conics,      // [C, N, 3]
     const float *__restrict__ colors,       // [C, N, CDIM]
     const float *__restrict__ opacities,    // [C, N]
-    const float3 *__restrict__ mus,         // [C, N, 3] camera-space means
-    const float *__restrict__ precs,        // [C, N, 6] camera-space precisions
+    const float *__restrict__ planes,       // [C, N, 4] z_c, g_x, g_y, sigma
     const float *__restrict__ depth_limits, // [C, H, W] mesh depth, +inf if none
     const float *__restrict__ coverages,    // [C, H, W] mesh coverage
-    const float *__restrict__ Ks,           // [C, 3, 3]
     const float inv_softness,
     const bool skip_covered_back,
     const uint32_t image_width,
@@ -118,10 +107,6 @@ __global__ void rasterize_hybrid_fwd_kernel(
     const bool inside = (i < image_height && j < image_width);
     bool done = !inside;
 
-    // camera ray through the pixel center (z = 1)
-    const float *K = Ks + camera_id * 9;
-    const float3 dir = make_float3((px - K[2]) / K[0], (py - K[5]) / K[4], 1.f);
-
     const float D = inside ? depth_limits[pix_id] : 0.f;
     const bool has_mesh = inside && isfinite(D);
     const float coverage = inside ? coverages[pix_id] : 0.f;
@@ -137,11 +122,10 @@ __global__ void rasterize_hybrid_fwd_kernel(
         (range_end - range_start + block_size - 1) / block_size;
 
     extern __shared__ int s[];
-    int32_t *id_batch = (int32_t *)s;                                      // [bs]
+    int32_t *id_batch = (int32_t *)s;                                              // [bs]
     float3 *xy_opacity_batch = reinterpret_cast<float3 *>(&id_batch[block_size]); // [bs]
-    float3 *conic_batch = &xy_opacity_batch[block_size];                  // [bs]
-    float3 *mu_batch = &conic_batch[block_size];                          // [bs]
-    float *prec_batch = reinterpret_cast<float *>(&mu_batch[block_size]); // [bs * 6]
+    float3 *conic_batch = &xy_opacity_batch[block_size];                          // [bs]
+    float *plane_batch = reinterpret_cast<float *>(&conic_batch[block_size]);     // [bs * 4]
 
     float T_f = 1.f, T_b = 1.f;
     float pix_f[CDIM] = {0.f};
@@ -166,10 +150,9 @@ __global__ void rasterize_hybrid_fwd_kernel(
             const float2 xy = means2d[g];
             xy_opacity_batch[tr] = make_float3(xy.x, xy.y, opacities[g]);
             conic_batch[tr] = conics[g];
-            mu_batch[tr] = mus[g];
 #pragma unroll
-            for (int k = 0; k < 6; ++k) {
-                prec_batch[tr * 6 + k] = precs[g * 6 + k];
+            for (int k = 0; k < 4; ++k) {
+                plane_batch[tr * 4 + k] = planes[g * 4 + k];
             }
         }
         block.sync();
@@ -188,14 +171,10 @@ __global__ void rasterize_hybrid_fwd_kernel(
                 continue;
             }
 
-            // fraction of the Gaussian in front of the mesh, along this ray
-            float frac = 1.f;
-            if (has_mesh) {
-                float ra, rb;
-                float3 Pd;
-                gaussian_ray_params(prec_batch + t * 6, mu_batch[t], dir, ra, rb, Pd);
-                frac = normcdff(gaussian_ray_offset(ra, rb, D, inv_softness));
-            }
+            // fraction of the Gaussian in front of the mesh at this pixel
+            const float frac = has_mesh
+                ? normcdff(gaussian_split_offset(plane_batch + t * 4, delta, D, inv_softness))
+                : 1.f;
 
             const int32_t g = id_batch[t];
             const float *c_ptr = colors + g * CDIM;
@@ -259,11 +238,9 @@ __global__ void rasterize_hybrid_bwd_kernel(
     const float3 *__restrict__ conics,      // [C, N, 3]
     const float *__restrict__ colors,       // [C, N, CDIM]
     const float *__restrict__ opacities,    // [C, N]
-    const float3 *__restrict__ mus,         // [C, N, 3]
-    const float *__restrict__ precs,        // [C, N, 6]
+    const float *__restrict__ planes,       // [C, N, 4]
     const float *__restrict__ depth_limits, // [C, H, W]
     const float *__restrict__ coverages,    // [C, H, W]
-    const float *__restrict__ Ks,           // [C, 3, 3]
     const float inv_softness,
     const bool skip_covered_back,
     const uint32_t image_width,
@@ -274,8 +251,8 @@ __global__ void rasterize_hybrid_bwd_kernel(
     const int32_t *__restrict__ tile_offsets, // [C, tile_height, tile_width]
     const int32_t *__restrict__ flatten_ids,  // [n_isects]
     // forward outputs
-    const float *__restrict__ T_front,  // [C, H, W]
-    const float *__restrict__ T_back,   // [C, H, W]
+    const float *__restrict__ T_front,    // [C, H, W]
+    const float *__restrict__ T_back,     // [C, H, W]
     const int32_t *__restrict__ last_ids, // [C, H, W, 2]
     // gradients of the outputs
     const float *__restrict__ v_out_front, // [C, H, W, CDIM]
@@ -283,13 +260,12 @@ __global__ void rasterize_hybrid_bwd_kernel(
     const float *__restrict__ v_out_back,  // [C, H, W, CDIM]
     const float *__restrict__ v_T_back,    // [C, H, W]
     // gradients of the inputs
-    float2 *__restrict__ v_means2d,     // [C, N, 2]
-    float3 *__restrict__ v_conics,      // [C, N, 3]
-    float *__restrict__ v_colors,       // [C, N, CDIM]
-    float *__restrict__ v_opacities,    // [C, N]
-    float3 *__restrict__ v_mus,         // [C, N, 3]
-    float *__restrict__ v_precs,        // [C, N, 6]
-    float *__restrict__ v_depth_limits  // [C, H, W]
+    float2 *__restrict__ v_means2d,    // [C, N, 2]
+    float3 *__restrict__ v_conics,     // [C, N, 3]
+    float *__restrict__ v_colors,      // [C, N, CDIM]
+    float *__restrict__ v_opacities,   // [C, N]
+    float *__restrict__ v_planes,      // [C, N, 4]
+    float *__restrict__ v_depth_limits // [C, H, W]
 ) {
     auto block = cg::this_thread_block();
     cg::thread_block_tile<32> warp = cg::tiled_partition<32>(block);
@@ -320,9 +296,6 @@ __global__ void rasterize_hybrid_bwd_kernel(
     // clamp this value to the last pixel (for reads only)
     const int32_t pix_id = min((int32_t)(i * image_width + j), n_pix - 1);
 
-    const float *K = Ks + camera_id * 9;
-    const float3 dir = make_float3((px - K[2]) / K[0], (py - K[5]) / K[4], 1.f);
-
     const float D = inside ? depth_limits[pix_id] : 0.f;
     const bool has_mesh = inside && isfinite(D);
     const float coverage = inside ? coverages[pix_id] : 0.f;
@@ -341,9 +314,8 @@ __global__ void rasterize_hybrid_bwd_kernel(
     int32_t *id_batch = (int32_t *)s;
     float3 *xy_opacity_batch = reinterpret_cast<float3 *>(&id_batch[block_size]);
     float3 *conic_batch = &xy_opacity_batch[block_size];
-    float3 *mu_batch = &conic_batch[block_size];
-    float *prec_batch = reinterpret_cast<float *>(&mu_batch[block_size]); // [bs * 6]
-    float *rgbs_batch = &prec_batch[block_size * 6];                      // [bs * CDIM]
+    float *plane_batch = reinterpret_cast<float *>(&conic_batch[block_size]); // [bs * 4]
+    float *rgbs_batch = &plane_batch[block_size * 4];                         // [bs * CDIM]
 
     // transmittance AFTER the last Gaussian of each layer
     const float T_f_final = inside ? T_front[pix_id] : 1.f;
@@ -383,10 +355,9 @@ __global__ void rasterize_hybrid_bwd_kernel(
             const float2 xy = means2d[g];
             xy_opacity_batch[tr] = make_float3(xy.x, xy.y, opacities[g]);
             conic_batch[tr] = conics[g];
-            mu_batch[tr] = mus[g];
 #pragma unroll
-            for (int k = 0; k < 6; ++k) {
-                prec_batch[tr * 6 + k] = precs[g * 6 + k];
+            for (int k = 0; k < 4; ++k) {
+                plane_batch[tr * 4 + k] = planes[g * 4 + k];
             }
 #pragma unroll
             for (uint32_t k = 0; k < CDIM; ++k) {
@@ -427,20 +398,16 @@ __global__ void rasterize_hybrid_bwd_kernel(
             float3 v_conic_local = make_float3(0.f, 0.f, 0.f);
             float2 v_xy_local = make_float2(0.f, 0.f);
             float v_opacity_local = 0.f;
-            float3 v_mu_local = make_float3(0.f, 0.f, 0.f);
-            float v_prec_local[6] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+            float v_plane_local[4] = {0.f, 0.f, 0.f, 0.f};
 
             if (valid) {
                 const float *rgb = rgbs_batch + t * CDIM;
+                const float *plane = plane_batch + t * 4;
 
                 // recompute the split exactly as in the forward pass
-                float frac = 1.f, ra = 0.f, rb = 0.f, s = 0.f;
-                float3 Pd = make_float3(0.f, 0.f, 0.f);
-                const float3 mu = mu_batch[t];
-                const float *P = prec_batch + t * 6;
+                float frac = 1.f, s = 0.f;
                 if (has_mesh) {
-                    gaussian_ray_params(P, mu, dir, ra, rb, Pd);
-                    s = gaussian_ray_offset(ra, rb, D, inv_softness);
+                    s = gaussian_split_offset(plane, delta, D, inv_softness);
                     frac = normcdff(s);
                 }
                 const float alpha_f = alpha * frac;
@@ -495,22 +462,18 @@ __global__ void rasterize_hybrid_bwd_kernel(
                 }
 
                 if (has_mesh && v_frac != 0.f) {
-                    // frac = Phi(s), s = (D sqrt(a) - b / sqrt(a)) / softness
+                    // frac = Phi(s), s = (D - z*) / (sigma * softness),
+                    // z* = z_c - g . delta, delta = mean2d - pixel
                     const float phi = 0.3989422804014327f * __expf(-0.5f * s * s);
                     const float v_s = v_frac * phi;
-                    const float sa = sqrtf(ra);
-                    v_D += v_s * sa * inv_softness;
-                    const float v_a =
-                        v_s * inv_softness * (0.5f * D / sa + 0.5f * rb / (ra * sa));
-                    const float v_b = -v_s * inv_softness / sa;
-                    // a = d^T P d, b = d^T P mu (P symmetric, upper triangle stored)
-                    v_prec_local[0] = v_a * dir.x * dir.x + v_b * dir.x * mu.x;
-                    v_prec_local[1] = v_a * 2.f * dir.x * dir.y + v_b * (dir.x * mu.y + dir.y * mu.x);
-                    v_prec_local[2] = v_a * 2.f * dir.x * dir.z + v_b * (dir.x * mu.z + dir.z * mu.x);
-                    v_prec_local[3] = v_a * dir.y * dir.y + v_b * dir.y * mu.y;
-                    v_prec_local[4] = v_a * 2.f * dir.y * dir.z + v_b * (dir.y * mu.z + dir.z * mu.y);
-                    v_prec_local[5] = v_a * dir.z * dir.z + v_b * dir.z * mu.z;
-                    v_mu_local = make_float3(v_b * Pd.x, v_b * Pd.y, v_b * Pd.z);
+                    const float k = inv_softness / plane[3]; // ds/dD = -ds/dz*
+                    v_D += v_s * k;
+                    v_plane_local[0] = -v_s * k;             // z_c
+                    v_plane_local[1] = v_s * k * delta.x;    // g_x
+                    v_plane_local[2] = v_s * k * delta.y;    // g_y
+                    v_plane_local[3] = -v_s * s / plane[3];  // sigma
+                    v_xy_local.x += v_s * k * plane[1];      // through delta
+                    v_xy_local.y += v_s * k * plane[2];
                 }
             }
 
@@ -525,12 +488,9 @@ __global__ void rasterize_hybrid_bwd_kernel(
             v_xy_local.x = cg::reduce(warp, v_xy_local.x, cg::plus<float>());
             v_xy_local.y = cg::reduce(warp, v_xy_local.y, cg::plus<float>());
             v_opacity_local = cg::reduce(warp, v_opacity_local, cg::plus<float>());
-            v_mu_local.x = cg::reduce(warp, v_mu_local.x, cg::plus<float>());
-            v_mu_local.y = cg::reduce(warp, v_mu_local.y, cg::plus<float>());
-            v_mu_local.z = cg::reduce(warp, v_mu_local.z, cg::plus<float>());
 #pragma unroll
-            for (int k = 0; k < 6; ++k) {
-                v_prec_local[k] = cg::reduce(warp, v_prec_local[k], cg::plus<float>());
+            for (int k = 0; k < 4; ++k) {
+                v_plane_local[k] = cg::reduce(warp, v_plane_local[k], cg::plus<float>());
             }
 
             if (warp.thread_rank() == 0) {
@@ -548,14 +508,10 @@ __global__ void rasterize_hybrid_bwd_kernel(
                 gpuAtomicAdd(v_xy_ptr, v_xy_local.x);
                 gpuAtomicAdd(v_xy_ptr + 1, v_xy_local.y);
                 gpuAtomicAdd(v_opacities + g, v_opacity_local);
-                float *v_mu_ptr = (float *)(v_mus) + 3 * g;
-                gpuAtomicAdd(v_mu_ptr, v_mu_local.x);
-                gpuAtomicAdd(v_mu_ptr + 1, v_mu_local.y);
-                gpuAtomicAdd(v_mu_ptr + 2, v_mu_local.z);
-                float *v_prec_ptr = v_precs + 6 * g;
+                float *v_plane_ptr = v_planes + 4 * g;
 #pragma unroll
-                for (int k = 0; k < 6; ++k) {
-                    gpuAtomicAdd(v_prec_ptr + k, v_prec_local[k]);
+                for (int k = 0; k < 4; ++k) {
+                    gpuAtomicAdd(v_plane_ptr + k, v_plane_local[k]);
                 }
             }
         }
@@ -582,12 +538,12 @@ void check_hybrid_launch(const void *kernel, int64_t shmem_size) {
 
 int64_t hybrid_fwd_shmem(uint32_t tile_size) {
     return tile_size * tile_size *
-           (sizeof(int32_t) + 3 * sizeof(float3) + 6 * sizeof(float));
+           (sizeof(int32_t) + 2 * sizeof(float3) + 4 * sizeof(float));
 }
 
 int64_t hybrid_bwd_shmem(uint32_t tile_size, uint32_t cdim) {
     return tile_size * tile_size *
-           (sizeof(int32_t) + 3 * sizeof(float3) + (6 + cdim) * sizeof(float));
+           (sizeof(int32_t) + 2 * sizeof(float3) + (4 + cdim) * sizeof(float));
 }
 
 } // namespace
@@ -598,11 +554,9 @@ void launch_rasterize_hybrid_fwd(
     const at::Tensor &conics,
     const at::Tensor &colors,
     const at::Tensor &opacities,
-    const at::Tensor &mus,
-    const at::Tensor &precs,
+    const at::Tensor &planes,
     const at::Tensor &depth_limits,
     const at::Tensor &coverages,
-    const at::Tensor &Ks,
     const float inv_softness,
     const bool skip_covered_back,
     const uint32_t image_width,
@@ -639,11 +593,9 @@ void launch_rasterize_hybrid_fwd(
             reinterpret_cast<const float3 *>(conics.data_ptr<float>()),
             colors.data_ptr<float>(),
             opacities.data_ptr<float>(),
-            reinterpret_cast<const float3 *>(mus.data_ptr<float>()),
-            precs.data_ptr<float>(),
+            planes.data_ptr<float>(),
             depth_limits.data_ptr<float>(),
             coverages.data_ptr<float>(),
-            Ks.data_ptr<float>(),
             inv_softness,
             skip_covered_back,
             image_width,
@@ -668,11 +620,9 @@ void launch_rasterize_hybrid_bwd(
     const at::Tensor &conics,
     const at::Tensor &colors,
     const at::Tensor &opacities,
-    const at::Tensor &mus,
-    const at::Tensor &precs,
+    const at::Tensor &planes,
     const at::Tensor &depth_limits,
     const at::Tensor &coverages,
-    const at::Tensor &Ks,
     const float inv_softness,
     const bool skip_covered_back,
     const uint32_t image_width,
@@ -691,8 +641,7 @@ void launch_rasterize_hybrid_bwd(
     at::Tensor &v_conics,
     at::Tensor &v_colors,
     at::Tensor &v_opacities,
-    at::Tensor &v_mus,
-    at::Tensor &v_precs,
+    at::Tensor &v_planes,
     at::Tensor &v_depth_limits
 ) {
     const uint32_t C = tile_offsets.size(0);
@@ -718,11 +667,9 @@ void launch_rasterize_hybrid_bwd(
             reinterpret_cast<const float3 *>(conics.data_ptr<float>()),
             colors.data_ptr<float>(),
             opacities.data_ptr<float>(),
-            reinterpret_cast<const float3 *>(mus.data_ptr<float>()),
-            precs.data_ptr<float>(),
+            planes.data_ptr<float>(),
             depth_limits.data_ptr<float>(),
             coverages.data_ptr<float>(),
-            Ks.data_ptr<float>(),
             inv_softness,
             skip_covered_back,
             image_width,
@@ -743,8 +690,7 @@ void launch_rasterize_hybrid_bwd(
             reinterpret_cast<float3 *>(v_conics.data_ptr<float>()),
             v_colors.data_ptr<float>(),
             v_opacities.data_ptr<float>(),
-            reinterpret_cast<float3 *>(v_mus.data_ptr<float>()),
-            v_precs.data_ptr<float>(),
+            v_planes.data_ptr<float>(),
             v_depth_limits.data_ptr<float>()
         );
     C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -773,11 +719,9 @@ rasterize_hybrid_fwd(
     const at::Tensor &conics,       // [C, N, 3]
     const at::Tensor &colors,       // [C, N, channels]
     const at::Tensor &opacities,    // [C, N]
-    const at::Tensor &mus,          // [C, N, 3]
-    const at::Tensor &precs,        // [C, N, 6]
+    const at::Tensor &planes,       // [C, N, 4]
     const at::Tensor &depth_limits, // [C, H, W]
     const at::Tensor &coverages,    // [C, H, W]
-    const at::Tensor &Ks,           // [C, 3, 3]
     const double softness,
     const bool skip_covered_back,
     const int64_t image_width,
@@ -804,8 +748,8 @@ rasterize_hybrid_fwd(
 #define __LAUNCH__(CDIM)                                                       \
     case CDIM:                                                                 \
         launch_rasterize_hybrid_fwd<CDIM>(                                     \
-            means2d, conics, colors, opacities, mus, precs, depth_limits,      \
-            coverages, Ks, inv_softness, skip_covered_back,                    \
+            means2d, conics, colors, opacities, planes, depth_limits,          \
+            coverages, inv_softness, skip_covered_back,                        \
             static_cast<uint32_t>(image_width),                                \
             static_cast<uint32_t>(image_height),                               \
             static_cast<uint32_t>(tile_size), tile_offsets, flatten_ids,       \
@@ -819,18 +763,15 @@ rasterize_hybrid_fwd(
     return std::make_tuple(out_front, T_front, out_back, T_back, last_ids);
 }
 
-std::tuple<
-    at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
 rasterize_hybrid_bwd(
     const at::Tensor &means2d,
     const at::Tensor &conics,
     const at::Tensor &colors,
     const at::Tensor &opacities,
-    const at::Tensor &mus,
-    const at::Tensor &precs,
+    const at::Tensor &planes,
     const at::Tensor &depth_limits,
     const at::Tensor &coverages,
-    const at::Tensor &Ks,
     const double softness,
     const bool skip_covered_back,
     const int64_t image_width,
@@ -854,8 +795,7 @@ rasterize_hybrid_bwd(
     at::Tensor v_conics = at::zeros_like(conics);
     at::Tensor v_colors = at::zeros_like(colors);
     at::Tensor v_opacities = at::zeros_like(opacities);
-    at::Tensor v_mus = at::zeros_like(mus);
-    at::Tensor v_precs = at::zeros_like(precs);
+    at::Tensor v_planes = at::zeros_like(planes);
     at::Tensor v_depth_limits = at::zeros_like(depth_limits);
 
     const float inv_softness = static_cast<float>(1.0 / softness);
@@ -863,14 +803,14 @@ rasterize_hybrid_bwd(
 #define __LAUNCH__(CDIM)                                                       \
     case CDIM:                                                                 \
         launch_rasterize_hybrid_bwd<CDIM>(                                     \
-            means2d, conics, colors, opacities, mus, precs, depth_limits,      \
-            coverages, Ks, inv_softness, skip_covered_back,                    \
+            means2d, conics, colors, opacities, planes, depth_limits,          \
+            coverages, inv_softness, skip_covered_back,                        \
             static_cast<uint32_t>(image_width),                                \
             static_cast<uint32_t>(image_height),                               \
             static_cast<uint32_t>(tile_size), tile_offsets, flatten_ids,       \
             T_front, T_back, last_ids, v_out_front, v_T_front, v_out_back,     \
-            v_T_back, v_means2d, v_conics, v_colors, v_opacities, v_mus,       \
-            v_precs, v_depth_limits                                            \
+            v_T_back, v_means2d, v_conics, v_colors, v_opacities, v_planes,    \
+            v_depth_limits                                                     \
         );                                                                     \
         break;
 
@@ -878,7 +818,7 @@ rasterize_hybrid_bwd(
 #undef __LAUNCH__
 
     return std::make_tuple(
-        v_means2d, v_conics, v_colors, v_opacities, v_mus, v_precs, v_depth_limits
+        v_means2d, v_conics, v_colors, v_opacities, v_planes, v_depth_limits
     );
 }
 

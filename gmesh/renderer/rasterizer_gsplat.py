@@ -141,6 +141,7 @@ class GaussianRasterizer:
                          depth_limits : torch.Tensor,
                          coverages : torch.Tensor,
                          softness : float = 1.0,
+                         cull_occluded : bool = True,
                          ):
         """
         Rasterize 3D Gaussians into two layers, in front of and behind a mesh
@@ -154,6 +155,7 @@ class GaussianRasterizer:
             depth_limits (torch.Tensor): [B, H, W] mesh camera-space depth; +inf where there is no mesh.
             coverages (torch.Tensor): [B, H, W] mesh coverage in [0, 1].
             softness (float): scales the width of the soft depth test (1.0 = the Gaussian's own extent).
+            cull_occluded (bool): skip Gaussians certainly hidden behind fully covered tiles (exact, faster).
 
         Returns:
             dict with 'front', 'back' ([B, H, W, 4]: RGB + accumulated depth) and
@@ -177,6 +179,7 @@ class GaussianRasterizer:
             depth_limits = depth_limits,        # [B, H, W]
             coverages = coverages,              # [B, H, W]
             softness = softness,
+            cull_occluded = cull_occluded,
             near_plane = self.z_near,
             far_plane = self.z_far,
             tile_size = self.tile_size,

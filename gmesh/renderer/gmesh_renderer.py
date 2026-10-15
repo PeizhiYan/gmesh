@@ -11,11 +11,12 @@ from gmesh.scenes.cameras import PerspectiveCamera
 from gmesh.renderer.rasterizer_mesh import MeshRenderer
 from gmesh.renderer.rasterizer_gsplat import GaussianRasterizer
 from gmesh.renderer.rasterizer_hybrid import composite_hybrid
-from gmesh.utils.image_utils import blend_rgba, composite_with_bg
+from gmesh.utils.image_utils import blend_rgba
 
 
 class GmeshRenderer:
-    def __init__(self, camera : PerspectiveCamera, tile_size = 16, bg_color = (1.0, 1.0, 1.0), depth_bias = 0.0, softness = 1.0):
+    def __init__(self, camera : PerspectiveCamera, tile_size = 16, bg_color = (1.0, 1.0, 1.0), depth_bias = 0.0, softness = 1.0,
+                 antialias = True, cull_occluded = True):
         self.camera = camera
         self.image_height = camera.image_height
         self.image_width = camera.image_width
@@ -25,7 +26,9 @@ class GmeshRenderer:
         self.bg_color = bg_color        # background color
         self.depth_bias = depth_bias    # 'zbuffer' mode: z-test bias, to avoid z-fighting of Gaussians lying on the mesh surface
         self.softness = softness        # 'hybrid' mode: width of the soft depth test, relative to the Gaussians' extent
-        self.mesh_renderer = MeshRenderer(camera=camera, tile_size=tile_size, bg_color=bg_color) # setup mesh renderer
+        self.cull_occluded = cull_occluded  # 'hybrid' mode: skip Gaussians certainly hidden behind fully covered tiles
+        self.mesh_renderer = MeshRenderer(camera=camera, tile_size=tile_size, bg_color=bg_color,
+                                          antialias=antialias) # setup mesh renderer (antialiased mesh edges)
         self.gaussian_rasterizer = GaussianRasterizer(camera=camera, tile_size=tile_size, bg_color=bg_color) # setup 3DGS rasterizer
 
     def render(self,
@@ -48,11 +51,11 @@ class GmeshRenderer:
                 - for OrbitCamera, [B, 3] (elevation, azimuth, distance).
             return_all (bool): whether or not to return all rendered results
             mode (str):
-                - 'hybrid': each Gaussian is split along every camera ray into the part
-                  in front of and the part behind the mesh surface (soft, per-ray depth
-                  test using the Gaussian's 3D shape); the two parts are composited in
-                  front of / behind the opaque mesh. Smooth where Gaussians cross the
-                  surface, and differentiable w.r.t. Gaussian and mesh depth.
+                - 'hybrid': at every pixel, each Gaussian is split into the part in front of
+                  and the part behind the mesh surface (soft depth test using the Gaussian's
+                  3D shape); the two parts are composited in front of / behind the opaque
+                  (antialiased) mesh. Smooth where Gaussians cross the surface and at mesh
+                  silhouettes, and differentiable w.r.t. Gaussian and mesh geometry.
                 - 'zbuffer': each Gaussian is depth-tested by its center depth against
                   the mesh z-buffer per pixel (hard test).
                 - 'depth_blend': (legacy) render both separately and blend the two
@@ -77,9 +80,11 @@ class GmeshRenderer:
 
         # render the 3D mesh
         mesh_raster = self.mesh_renderer.rasterize(mesh=mesh, camera_pose=camera_pose)
-        alpha_m = mesh_raster['mask']                                                  # [B, H, W, 1]
-        depth_m = mesh_raster['depth']                                                 # [B, H, W, 1]
-        rgb_m = composite_with_bg(mesh_raster['attributes'], alpha_m, bg_color=self.bg_color)  # [B, H, W, 3]
+        alpha_m = mesh_raster['alpha']        # [B, H, W, 1] coverage (fractional at silhouettes if antialiased)
+        depth_m = mesh_raster['depth']        # [B, H, W, 1]
+        color_m = mesh_raster['color']        # [B, H, W, 3] premultiplied by the coverage
+        bg = torch.tensor(self.bg_color, dtype=color_m.dtype, device=color_m.device).view(1, 1, 1, 3)
+        rgb_m = color_m + (1.0 - alpha_m) * bg  # [B, H, W, 3] composited over the background
 
         if mode in ['hybrid', 'zbuffer'] and not return_all:
             rgb_g = depth_g = alpha_g = None
@@ -93,9 +98,10 @@ class GmeshRenderer:
             layers = self.gaussian_rasterizer.rasterize_hybrid(
                 gaussians=gaussians, camera_pose=camera_pose,
                 depth_limits=depth_limits, coverages=alpha_m[..., 0], softness=softness,
+                cull_occluded=self.cull_occluded,
             )
             rgb_blend, depth_blend, alpha_blend = composite_hybrid(
-                layers, mesh_raster['attributes'], depth_m, alpha_m, self.bg_color
+                layers, color_m, depth_m, alpha_m, self.bg_color
             )
         elif mode == 'zbuffer':
             rgb_blend, depth_blend, alpha_blend = self.composite_with_zbuffer(
@@ -131,7 +137,7 @@ class GmeshRenderer:
         Args:
             rgb_m:   [B, H, W, 3]  mesh color, already composited over the background
             depth_m: [B, H, W, 1]  mesh camera-space depth
-            alpha_m: [B, H, W, 1]  mesh coverage (binary)
+            alpha_m: [B, H, W, 1]  mesh coverage
 
         Returns:
             rgb_out:   [B, H, W, 3]

@@ -28,25 +28,22 @@ from common import (
 )
 
 
-INPUT_KEYS = ("means2d", "conics", "colors", "opacities", "mus", "precs")
+INPUT_KEYS = ("means2d", "conics", "colors", "opacities", "planes")
 THRESHOLD = 1.0 / 255.0
 
 
-def _reference(means2d, conics, colors, opacities, mus, precs, depth_limits, coverages, Ks,
+def _reference(means2d, conics, colors, opacities, planes, depth_limits, coverages,
                depths, member, W, H, softness, skip_covered_back):
     """
     Brute-force PyTorch version of the hybrid kernel (autograd for backward).
     Mirrors the CUDA kernel: front-to-back order, alpha threshold, 0.999 clamp,
-    T <= 1e-4 termination of each layer, and the per-ray split.
+    T <= 1e-4 termination of each layer, and the per-pixel split.
     """
     C, N = means2d.shape[:2]
     px, py = pixel_centers(W, H)
 
     outs = {"front": [], "T_front": [], "back": [], "T_back": []}
     for c in range(C):
-        K = Ks[c]
-        rx = (px - K[0, 2]) / K[0, 0]
-        ry = (py - K[1, 2]) / K[1, 1]
         D = depth_limits[c].flatten()
         has_mesh = torch.isfinite(D)
         D_safe = torch.where(has_mesh, D, torch.zeros_like(D))
@@ -68,15 +65,10 @@ def _reference(means2d, conics, colors, opacities, mus, precs, depth_limits, cov
             alpha = torch.clamp_max(opacities[c, n] * torch.exp(-sigma), 0.999)
             valid = member[c, :, n] & (sigma >= 0) & (alpha >= THRESHOLD) & ~done
 
-            # split along the ray
-            P = precs[c, n]
-            mu = mus[c, n]
-            Pd0 = P[0] * rx + P[1] * ry + P[2]
-            Pd1 = P[1] * rx + P[3] * ry + P[4]
-            Pd2 = P[2] * rx + P[4] * ry + P[5]
-            a = rx * Pd0 + ry * Pd1 + Pd2
-            b = mu[0] * Pd0 + mu[1] * Pd1 + mu[2] * Pd2
-            s = (D_safe * a.sqrt() - b / a.sqrt()) / softness
+            # split at the mesh depth, with the Gaussian's depth model at this pixel
+            z_c, g_x, g_y, sigma_z = planes[c, n].unbind()
+            z_star = z_c - (g_x * dx + g_y * dy)
+            s = (D_safe - z_star) / (sigma_z * softness)
             frac = torch.where(has_mesh, torch.special.ndtr(s), torch.ones_like(s))
 
             alpha_f = alpha * frac
@@ -104,12 +96,12 @@ def _reference(means2d, conics, colors, opacities, mus, precs, depth_limits, cov
     return {k: torch.stack(v) for k, v in outs.items()}
 
 
-def _run(scene, depth_limits, coverages, softness=1.0, inputs=None):
+def _run(scene, depth_limits, coverages, softness=1.0, inputs=None, skip_covered_back=True):
     if inputs is None:
         inputs = leaves(scene, INPUT_KEYS)
     out = rasterize_to_pixels_hybrid(
-        *inputs, depth_limits, coverages, scene["Ks"], scene["W"], scene["H"], scene["tile_size"],
-        scene["isect_offsets"], scene["flatten_ids"], softness=softness,
+        *inputs, depth_limits, coverages, scene["W"], scene["H"], scene["tile_size"],
+        scene["isect_offsets"], scene["flatten_ids"], softness=softness, skip_covered_back=skip_covered_back,
     )
     return out, inputs
 
@@ -143,15 +135,14 @@ def test_no_mesh_matches_gsplat(channels):
     assert (out["T_back"] == 1.0).all()
     for name, ours, ref in zip(("means2d", "conics", "colors", "opacities"), our_in[:4], ref_in):
         assert_close(ours.grad, ref.grad, f"grad {name}", atol_scale=1e-5)
-    # the mesh-related inputs get no gradient without a mesh
+    # the depth model gets no gradient without a mesh
     assert our_in[4].grad.abs().max().item() == 0.0
-    assert our_in[5].grad.abs().max().item() == 0.0
 
 
 @pytest.mark.parametrize("channels", [3, 4])
 @pytest.mark.parametrize("softness", [1.0, 0.3])
-@pytest.mark.parametrize("coverage_grad", [False, True])
-def test_matches_reference(channels, softness, coverage_grad):
+@pytest.mark.parametrize("skip_covered_back", [True, False])
+def test_matches_reference(channels, softness, skip_covered_back):
     """With a mesh, compare all outputs and gradients to a brute-force reference."""
     scene = random_scene(channels=channels, seed=3)
     W, H, C = scene["W"], scene["H"], scene["C"]
@@ -164,16 +155,15 @@ def test_matches_reference(channels, softness, coverage_grad):
     coverages = torch.isfinite(limits).float()
     coverages[:, : H // 3, W // 2:] = 0.5
     limits = limits.clone().requires_grad_(True)
-    coverages = coverages.requires_grad_(coverage_grad)
 
     member = tile_membership(scene)
     ref_in = leaves(scene, INPUT_KEYS)
     ref_limits = limits.detach().clone().requires_grad_(True)
-    ref = _reference(*ref_in, ref_limits, coverages.detach(), scene["Ks"], scene["depths"], member, W, H,
-                     softness, skip_covered_back=not coverage_grad)
+    ref = _reference(*ref_in, ref_limits, coverages.detach(), scene["depths"], member, W, H,
+                     softness, skip_covered_back=skip_covered_back)
     _loss(ref, scene, channels).backward()
 
-    out, our_in = _run(scene, limits, coverages, softness=softness)
+    out, our_in = _run(scene, limits, coverages, softness=softness, skip_covered_back=skip_covered_back)
     _loss(out, scene, channels).backward()
 
     # the mesh actually splits some Gaussians
@@ -189,24 +179,66 @@ def test_matches_reference(channels, softness, coverage_grad):
 
 def test_split_is_continuous():
     """
-    Moving the mesh surface across the Gaussians changes the image smoothly
-    (no hard cut): small depth steps give small changes.
+    Moving the mesh surface across the Gaussians changes the image continuously
+    (no hard cut): with 4x smaller depth steps, the largest change per step
+    shrinks accordingly (a hard cut would keep it constant).
     """
     scene = random_scene(seed=4)
     W, H, C = scene["W"], scene["H"], scene["C"]
     coverages = torch.ones(C, H, W, device=DEVICE)
     inputs = [scene[k] for k in INPUT_KEYS]
 
-    prev = None
-    max_step = 0.0
-    for d in torch.linspace(2.4, 3.6, 241).tolist():
-        limits = torch.full((C, H, W), d, device=DEVICE)
-        out, _ = _run(scene, limits, coverages, inputs=inputs)
-        if prev is not None:
-            max_step = max(max_step, (out["front"] - prev).abs().max().item())
-        prev = out["front"]
-    # 241 steps over the whole depth range: no single step should flip a Gaussian on/off
-    assert max_step < 0.15, max_step
+    def max_step(n_steps):
+        prev, worst = None, 0.0
+        for d in torch.linspace(2.4, 3.6, n_steps).tolist():
+            limits = torch.full((C, H, W), d, device=DEVICE)
+            out, _ = _run(scene, limits, coverages, inputs=inputs)
+            if prev is not None:
+                worst = max(worst, (out["front"] - prev).abs().max().item())
+            prev = out["front"]
+        return worst
+
+    coarse, fine = max_step(121), max_step(481)
+    assert coarse > 0
+    assert fine < 0.5 * coarse, (coarse, fine)
+
+
+def test_occlusion_culling_is_exact():
+    """Culling hidden Gaussians in fully covered tiles does not change the result."""
+    from gmesh.renderer.rasterizer_hybrid import rasterization_hybrid
+
+    g = torch.Generator().manual_seed(5)
+    N, W, H = 300, 96, 64
+    means = ((torch.rand(N, 3, generator=g) * 2 - 1) * torch.tensor([1.5, 1.0, 2.0]) + torch.tensor([0.0, 0.0, 4.0])).to(DEVICE)
+    quats = torch.randn(N, 4, generator=g).to(DEVICE)
+    scales = (torch.rand(N, 3, generator=g) * 0.08 + 0.01).to(DEVICE)
+    opacities = (torch.rand(N, generator=g) * 0.8 + 0.1).to(DEVICE)
+    shs = torch.rand(N, 1, 3, generator=g).to(DEVICE)
+    viewmats = torch.eye(4, device=DEVICE)[None]
+    Ks = torch.tensor([[70.0, 0.0, W / 2], [0.0, 70.0, H / 2], [0.0, 0.0, 1.0]], device=DEVICE)[None]
+    # a wall at depth 3 covering the left 2/3 of the image, slanted, with a partially covered column
+    xs = torch.arange(W, device=DEVICE).float()
+    limits = (2.8 + 0.2 * xs / W).view(1, 1, W).repeat(1, H, 1)
+    coverages = torch.ones(1, H, W, device=DEVICE)
+    limits[:, :, 2 * W // 3:] = float("inf")
+    coverages[:, :, 2 * W // 3:] = 0.0
+    coverages[:, :, 2 * W // 3 - 1] = 0.5
+
+    outs = {}
+    for cull in (False, True):
+        params = [t.clone().requires_grad_(True) for t in (means, quats, scales, opacities, shs)]
+        layers = rasterization_hybrid(*params[:4], params[4], 0, viewmats, Ks, W, H, limits, coverages,
+                                      cull_occluded=cull)
+        loss = sum((layers[k] * torch.randn(layers[k].shape, generator=torch.Generator().manual_seed(7)).to(DEVICE)).sum()
+                   for k in ("front", "T_front", "back", "T_back"))
+        loss.backward()
+        outs[cull] = (layers, [p.grad for p in params])
+
+    assert outs[True][0]["n_isects_rendered"] < outs[False][0]["n_isects_rendered"]
+    for k in ("front", "T_front", "back", "T_back"):
+        torch.testing.assert_close(outs[True][0][k], outs[False][0][k])
+    for name, ours, ref in zip(("means", "quats", "scales", "opacities", "shs"), outs[True][1], outs[False][1]):
+        assert_close(ours, ref, f"grad {name}", rtol=1e-4, atol_scale=1e-5)
 
 
 if __name__ == "__main__":
