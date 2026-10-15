@@ -39,10 +39,8 @@ import sys
 import time
 
 import imageio.v2 as imageio
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.figure import Figure  # no pyplot: importing this file must not change the plotting backend
 import torch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -241,15 +239,15 @@ def run_experiment(name, args, renderer, vertices, faces, gt_mesh_colors, gt_gau
     rows = [np.concatenate([to_uint8(a), to_uint8(b), to_uint8(c)], axis=1)
             for a, b, c in zip(gt_test[:3], init_test[:3], final_test[:3])]
     imageio.imwrite(os.path.join(args.out, f"{name}_test_views.png"), np.concatenate(rows, axis=0))
-    plt.figure(figsize=(6, 3.5))
-    plt.plot(losses, linewidth=0.6)
-    plt.yscale("log")
-    plt.xlabel("iteration")
-    plt.ylabel("L1 loss")
-    plt.title(f"toy training: {name}")
-    plt.tight_layout()
-    plt.savefig(os.path.join(args.out, f"{name}_loss.png"), dpi=120)
-    plt.close()
+    fig = Figure(figsize=(6, 3.5))
+    ax = fig.add_subplot()
+    ax.plot(losses, linewidth=0.6)
+    ax.set_yscale("log")
+    ax.set_xlabel("iteration")
+    ax.set_ylabel("L1 loss")
+    ax.set_title(f"toy training: {name}")
+    fig.tight_layout()
+    fig.savefig(os.path.join(args.out, f"{name}_loss.png"), dpi=120)
 
     ok = psnr_final > psnr_init + 3.0
     if train_mesh:
