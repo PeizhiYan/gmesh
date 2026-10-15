@@ -33,6 +33,7 @@ Please see ```./examples```:
 1. 3D Mesh Rendering: [Link](./examples/example-1%20-%20mesh%20rendering.ipynb)
 2. 3DGS via gsplat: [Link](./examples/example-2%20-%20gaussian%20splatting.ipynb)
 3. Hybrid Gaussians and Mesh Rendering via Gmesh: [Link](./examples/example-3%20-%20gmesh%20hybrid%20rendering.ipynb)
+4. Toy Training through the Hybrid Renderer (Gaussians, mesh, and both): [Link](./examples/example-4%20-%20toy%20training.ipynb)
 
 
 
@@ -146,7 +147,7 @@ rgb, depth, alpha = gmesh_renderer.render(mesh=mesh, gaussians=gaussians, camera
 ## Toy Training Example
 
 ```bash
-python examples/train_toy.py                          # all three experiments
+python examples/train_toy.py                          # all three experiments (or see example 4, the notebook version)
 python examples/train_toy.py --experiment gaussians   # or: mesh, joint
 ```
 
