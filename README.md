@@ -44,10 +44,10 @@ conda install -c conda-forge cudatoolkit=11.7 cudatoolkit-dev=11.7
 pip install torch==2.0.1 torchvision --index-url https://download.pytorch.org/whl/cu117
 
 # install other dependencies
-pip install -r requirements.txt
+pip install --no-build-isolation -r requirements.txt
 
 # install Gmesh
-pip install -e .
+pip install --no-build-isolation -e .
 ```
 
 > [!TIP]
