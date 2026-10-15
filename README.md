@@ -143,6 +143,26 @@ rgb, depth, alpha = gmesh_renderer.render(mesh=mesh, gaussians=gaussians, camera
 
 
 
+## Toy Training Example
+
+```bash
+python examples/train_toy.py                          # all three experiments
+python examples/train_toy.py --experiment gaussians   # or: mesh, joint
+```
+
+A sanity check that the hybrid renderer trains: the ground truth is the example mesh plus two rings of colorful
+Gaussians passing *through* it (in front of it, behind it and crossing its surface), rendered from 24 orbit views.
+From perturbed parameters, Adam (L1 loss) fits
+
+- `gaussians`: the Gaussians (means, rotations, scales, opacities, colors), with the fixed mesh occluding them;
+- `mesh`: a translation of the mesh and its vertex colors, with the Gaussians fixed (gradients through the
+  silhouettes, the mesh depth vs. the Gaussians, and the color interpolation);
+- `joint`: both at once.
+
+It prints the loss and the PSNR on 6 held-out views (and the remaining mesh translation error), and saves test views
+(ground truth | initialization | trained) and loss curves to `output/toy_training/`.
+
+
 ## Tests
 
 The tests need a CUDA GPU (the renderer tests also need open3d to read the example mesh):
@@ -207,7 +227,8 @@ python interactive_demo.py
 - [ ] Support mesh texture map.
 - [ ] Support batch (batch of camera poses) rendering.
 - [ ] Add two additional mesh to Gaussians conversion methods.
-- [ ] Add some training examples.
+- [x] Add a toy training example (v1.0).
+- [ ] Add more training examples (e.g. real multi-view data, densification).
 
 
 
