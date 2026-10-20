@@ -139,10 +139,12 @@ def test_gaussian_rasterizer_matches_gsplat(sh_degree):
     from gmesh.renderer.rasterizer_gaussians import GaussianRasterizer
 
     means, quats, scales, opacities, shs = _gaussians(N=800, sh_degree=sh_degree)
+    means = means - torch.tensor([0.0, 0.0, 4.0], device=DEVICE)  # around the origin
     W, H = 96, 64
     camera = PerspectiveCamera(image_width=W, image_height=H, fov_x=50, fov_y=50 * H / W,
                                z_near=0.1, z_far=100, device=DEVICE)
-    camera_pose = torch.tensor([[0.1, -0.05, 0.0, 0.2, 0.1, 0.0]], device=DEVICE)
+    # the camera looks along -z from z = 4 (slightly rotated and shifted)
+    camera_pose = torch.tensor([[0.1, -0.05, 0.0, 0.2, 0.1, 4.0]], device=DEVICE)
     bg = (0.2, 0.4, 0.6)
     g = torch.Generator().manual_seed(6)
     w_rgb = torch.randn(1, H, W, 3, generator=g).to(DEVICE)

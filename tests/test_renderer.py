@@ -313,6 +313,9 @@ def test_hybrid_gradients_reach_gaussians_and_mesh():
     renderer = GmeshRenderer(camera=camera, tile_size=16, bg_color=(1.0, 1.0, 1.0))
     # Gaussians lying on the surface: the soft split is active everywhere
     gaussians = _gaussians_on(vertices, faces, dz=0.0)
+    with torch.no_grad():
+        # anisotropic: the rotation of a spherical Gaussian has no effect (zero quats gradient)
+        gaussians.scales.mul_(torch.tensor([1.5, 1.0, 0.5], device=DEVICE))
     mesh.verts = vertices.clone().requires_grad_(True)
     mesh.colors = mesh.colors.detach().clone().requires_grad_(True)
 
