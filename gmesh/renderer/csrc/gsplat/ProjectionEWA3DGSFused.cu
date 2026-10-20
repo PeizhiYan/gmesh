@@ -6,6 +6,8 @@
 //
 // Modified for Gmesh (Peizhi Yan, 2026):
 //   - renamed the namespace gsplat -> gmesh_gsplat
+//   - backward: per-thread atomics instead of cg::labeled_partition on GPUs with
+//     compute capability < 7.0 (e.g. GTX 10xx), which do not support it
 //
 
 #include <ATen/Dispatch.h>
@@ -21,6 +23,15 @@
 namespace gmesh_gsplat {
 
 namespace cg = cooperative_groups;
+
+// Compute capability < 7.0 has no cg::labeled_partition: there, every thread is
+// its own group and adds its gradients with atomics (same result, slower).
+struct SingleThreadGroup {
+    __device__ unsigned int thread_rank() const { return 0; }
+};
+inline __device__ void warpSum(vec3 &, SingleThreadGroup &) {}
+inline __device__ void warpSum(vec4 &, SingleThreadGroup &) {}
+inline __device__ void warpSum(mat3 &, SingleThreadGroup &) {}
 
 template <typename scalar_t>
 __global__ void projection_ewa_3dgs_fused_fwd_kernel(
@@ -470,10 +481,13 @@ __global__ void projection_ewa_3dgs_fused_bwd_kernel(
     posW2C_VJP(R, t, glm::make_vec3(means), v_mean_c, v_R, v_t, v_mean);
     covarW2C_VJP(R, covar, v_covar_c, v_R, v_covar);
 
-    // #if __CUDA_ARCH__ >= 700
     // write out results with warp-level reduction
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 700
+    SingleThreadGroup warp_group_g;
+#else
     auto warp = cg::tiled_partition<32>(cg::this_thread_block());
     auto warp_group_g = cg::labeled_partition(warp, gid);
+#endif
     if (v_means != nullptr) {
         warpSum(v_mean, warp_group_g);
         if (warp_group_g.thread_rank() == 0) {
@@ -517,7 +531,11 @@ __global__ void projection_ewa_3dgs_fused_bwd_kernel(
         }
     }
     if (v_viewmats != nullptr) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 700
+        SingleThreadGroup warp_group_c;
+#else
         auto warp_group_c = cg::labeled_partition(warp, cid);
+#endif
         warpSum(v_R, warp_group_c);
         warpSum(v_t, warp_group_c);
         if (warp_group_c.thread_rank() == 0) {

@@ -67,6 +67,7 @@ pip install --no-build-isolation -e .
 > The CUDA extension of Gmesh is JIT-compiled the first time it is used (this needs `nvcc` and `ninja`,
 > installed above, and takes about a minute). It is built with the `nvcc` that PyTorch finds through `CUDA_HOME`
 > (or `CUDA_PATH`, which a system-wide CUDA install sets on Windows); set `CUDA_HOME` to choose the toolkit.
+> Any NVIDIA GPU with compute capability 6.0 or higher works (GTX 10xx and newer).
 > If you encounter any issues or unexpected results, please double-check that you have installed the correct versions.
 
 

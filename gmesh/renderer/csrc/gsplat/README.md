@@ -10,7 +10,7 @@ licensed under the **Apache License, Version 2.0** (see [LICENSE](./LICENSE)).
 | `Common.h` | `gsplat/cuda/include/Common.h` | namespace `gsplat` -> `gmesh_gsplat` |
 | `Utils.cuh` | `gsplat/cuda/include/Utils.cuh` | namespace |
 | `Projection.h` | `gsplat/cuda/csrc/Projection.h` | namespace; only the fused (non-packed) 3DGS projection |
-| `ProjectionEWA3DGSFused.cu` | `gsplat/cuda/csrc/ProjectionEWA3DGSFused.cu` | namespace |
+| `ProjectionEWA3DGSFused.cu` | `gsplat/cuda/csrc/ProjectionEWA3DGSFused.cu` | namespace; backward without `cg::labeled_partition` on compute capability < 7.0 |
 | `Intersect.h`, `IntersectTile.cu` | `gsplat/cuda/csrc/Intersect.h`, `IntersectTile.cu` | namespace |
 | `SphericalHarmonics.h`, `SphericalHarmonicsCUDA.cu` | `gsplat/cuda/csrc/SphericalHarmonics.h`, `SphericalHarmonicsCUDA.cu` | namespace |
 | `GsplatOps.h`, `GsplatOps.cpp` | `gsplat/cuda/csrc/Projection.cpp`, `Intersect.cpp`, `SphericalHarmonics.cpp` | namespace; only the host functions above, in one file; pinhole-camera entry points for Gmesh |
