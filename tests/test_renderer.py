@@ -6,7 +6,7 @@
 """
 Tests for the mesh rasterizer and the hybrid renderer (GmeshRenderer).
 
-Requires a CUDA GPU, gsplat v1.5.2 and open3d (to read the example mesh).
+Requires a CUDA GPU and open3d (to read the example mesh).
 
 Run with:
     python -m pytest tests -v
@@ -200,7 +200,7 @@ def test_antialiasing_gradients():
 def test_mesh_is_pixel_aligned_with_gaussians(width, height):
     """
     Facet centers lie on the mesh surface, so when projected with the camera (as
-    gsplat does) they must land on mesh pixels, and they can never be in front
+    the Gaussian projection does) they must land on mesh pixels, and they can never be in front
     of the mesh z-buffer.
     """
     from gmesh.scenes.mesh import Mesh
@@ -290,7 +290,7 @@ def test_gaussians_behind_the_mesh_are_hidden():
 def test_gaussians_well_in_front_are_composited_over_the_mesh():
     """Gaussians entirely in front of the mesh: plain 3DGS composited over the mesh render."""
     from gmesh.renderer.gmesh_renderer import GmeshRenderer
-    from gmesh.renderer.rasterizer_gsplat import GaussianRasterizer
+    from gmesh.renderer.rasterizer_gaussians import GaussianRasterizer
 
     vertices, faces, mesh, camera, camera_pose = _spot_scene()
     renderer = GmeshRenderer(camera=camera, tile_size=16, bg_color=(1.0, 1.0, 1.0))
@@ -299,7 +299,7 @@ def test_gaussians_well_in_front_are_composited_over_the_mesh():
         ret = renderer.render(mesh=mesh, gaussians=gaussians, camera_pose=camera_pose, return_all=True)
         rgb, _, alpha = ret["blend"]
         rgb_m, _, alpha_m = ret["mesh"]
-        # gsplat alone, without background (premultiplied)
+        # plain 3DGS, without background (premultiplied)
         rgb_g, _, alpha_g = GaussianRasterizer(camera=camera, bg_color=(0.0, 0.0, 0.0)).rasterize(
             gaussians=gaussians, camera_pose=camera_pose)
     torch.testing.assert_close(rgb, rgb_g + (1.0 - alpha_g) * rgb_m, rtol=1e-4, atol=1e-4)

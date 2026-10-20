@@ -6,7 +6,7 @@
 """
 Tests for the hybrid (soft, per-ray depth test) Gaussian/mesh compositing kernel.
 
-Requires a CUDA GPU and gsplat v1.5.2.
+Requires a CUDA GPU (and gsplat v1.5.2 for the comparison with gsplat's rasterizer).
 The first run JIT-compiles the CUDA extension, which takes a minute.
 
 Run with:
@@ -18,8 +18,6 @@ import torch
 
 if not torch.cuda.is_available():
     pytest.skip("CUDA is required", allow_module_level=True)
-
-from gsplat.cuda._wrapper import rasterize_to_pixels
 
 from gmesh.renderer.rasterizer_hybrid import rasterize_to_pixels_hybrid
 
@@ -115,7 +113,9 @@ def _loss(out, scene, channels):
 
 @pytest.mark.parametrize("channels", [3, 4])
 def test_no_mesh_matches_gsplat(channels):
-    """Without a mesh, the front layer is plain 3DGS (forward and gradients)."""
+    """Without a mesh, the front layer is plain 3DGS (forward and gradients), as gsplat's rasterizer."""
+    gsplat_wrapper = pytest.importorskip("gsplat.cuda._wrapper")
+    rasterize_to_pixels = gsplat_wrapper.rasterize_to_pixels
     scene = random_scene(channels=channels)
     W, H, C, ts = scene["W"], scene["H"], scene["C"], scene["tile_size"]
     limits = torch.full((C, H, W), float("inf"), device=DEVICE)

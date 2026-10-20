@@ -4,8 +4,13 @@
 //
 // Hybrid Gaussian / mesh compositing with a soft, per-pixel depth test.
 //
-// The tile/batch structure follows gsplat v1.5.2 (Apache-2.0), see
-// gsplat/cuda/csrc/RasterizeToPixels3DGS{Fwd,Bwd}.cu.
+// Portions adapted from gsplat v1.5.2 (https://github.com/nerfstudio-project/gsplat),
+// files gsplat/cuda/csrc/RasterizeToPixels3DGSFwd.cu and RasterizeToPixels3DGSBwd.cu:
+// the tile/batch structure, the front-to-back alpha compositing and its backward
+// pass. Copyright the gsplat authors, licensed under the Apache License,
+// Version 2.0 (see ./gsplat/LICENSE). Modified for Gmesh: two compositing layers
+// (in front of / behind the mesh) with the soft depth test described below, the
+// gradients of the depth test, and no background / masks / absgrad.
 //
 // Each Gaussian's depth at pixel p uses the same local affine (EWA)
 // approximation as its 2D splat: the depth z conditioned on the projected

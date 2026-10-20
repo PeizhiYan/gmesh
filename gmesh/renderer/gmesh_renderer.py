@@ -9,7 +9,7 @@ from gmesh.scenes.mesh import Mesh
 from gmesh.scenes.gaussians import Gaussians
 from gmesh.scenes.cameras import PerspectiveCamera
 from gmesh.renderer.rasterizer_mesh import MeshRenderer
-from gmesh.renderer.rasterizer_gsplat import GaussianRasterizer
+from gmesh.renderer.rasterizer_gaussians import GaussianRasterizer
 from gmesh.renderer.rasterizer_hybrid import composite_hybrid
 
 

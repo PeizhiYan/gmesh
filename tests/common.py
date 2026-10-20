@@ -11,8 +11,7 @@ import os
 import pytest
 import torch
 
-from gsplat.cuda._wrapper import fully_fused_projection, isect_offset_encode, isect_tiles
-
+from gmesh.renderer.gsplat_ops import fully_fused_projection, isect_offset_encode, isect_tiles
 from gmesh.renderer.rasterizer_hybrid import gaussian_depth_planes
 
 
@@ -27,7 +26,7 @@ def pixel_centers(W, H):
 
 
 def random_scene(N=64, W=70, H=45, C=2, tile_size=16, channels=3, seed=0):
-    """Random Gaussians seen by C cameras, projected and tile-intersected by gsplat."""
+    """Random Gaussians seen by C cameras, projected and tile-intersected (gmesh.renderer.gsplat_ops)."""
     g = torch.Generator().manual_seed(seed)
     means = (torch.rand(N, 3, generator=g) * 2 - 1) * torch.tensor([1.0, 0.7, 0.5]) + torch.tensor([0.0, 0.0, 3.0])
     quats = torch.randn(N, 4, generator=g)
@@ -43,18 +42,14 @@ def random_scene(N=64, W=70, H=45, C=2, tile_size=16, channels=3, seed=0):
     to = lambda x: x.to(DEVICE)
     means, quats, scales, opacities, colors, viewmats, Ks = map(to, (means, quats, scales, opacities, colors, viewmats, Ks))
 
-    radii, means2d, depths, conics, _ = fully_fused_projection(
-        means, None, quats, scales, viewmats, Ks, W, H, packed=False, opacities=opacities
-    )
+    radii, means2d, depths, conics = fully_fused_projection(means, quats, scales, opacities, viewmats, Ks, W, H)
     tile_width = math.ceil(W / tile_size)
     tile_height = math.ceil(H / tile_size)
-    _, isect_ids, flatten_ids = isect_tiles(
-        means2d, radii, depths, tile_size, tile_width, tile_height, packed=False, n_cameras=C
-    )
+    _, isect_ids, flatten_ids = isect_tiles(means2d, radii, depths, tile_size, tile_width, tile_height)
     isect_offsets = isect_offset_encode(isect_ids, C, tile_width, tile_height)
 
     # per-pixel depth model of the Gaussians (for the hybrid rasterizer)
-    planes = gaussian_depth_planes(means, quats, scales, viewmats, Ks)
+    planes = gaussian_depth_planes(means, quats, scales, viewmats, Ks, W, H)
 
     return dict(
         means2d=means2d.detach(), conics=conics.detach(), colors=colors,

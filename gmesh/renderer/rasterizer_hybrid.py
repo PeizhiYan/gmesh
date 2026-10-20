@@ -29,8 +29,8 @@ and everything is differentiable, including w.r.t. the Gaussian depth and the
 mesh depth.
 
 The forward/backward CUDA kernels are in ./csrc/rasterize_hybrid.cu. The
-projection, spherical harmonics and tile intersection stages are gsplat's
-(differentiable) functions. Tested against gsplat v1.5.2.
+projection, spherical harmonics and tile intersection stages (gsplat_ops.py)
+are ported from gsplat v1.5.2 into Gmesh's own CUDA extension.
 """
 
 import math
@@ -40,7 +40,7 @@ import torch
 from torch import Tensor
 
 from gmesh.renderer._backend import load_extension
-from gsplat.cuda._wrapper import (
+from gmesh.renderer.gsplat_ops import (
     fully_fused_projection,
     isect_offset_encode,
     isect_tiles,
@@ -195,6 +195,8 @@ def gaussian_depth_planes(
     scales: Tensor,    # [N, 3]
     viewmats: Tensor,  # [C, 4, 4]
     Ks: Tensor,        # [C, 3, 3]
+    width: int,
+    height: int,
     eps2d: float = 0.3,
 ) -> Tensor:
     """
@@ -208,7 +210,8 @@ def gaussian_depth_planes(
         mean  z_c + g . (p - mean2d),  g = (J Sigma J^T + eps2d I)^-1 J Sigma e_z
         var   Sigma_zz - (J Sigma e_z) . g
 
-    (eps2d is the same low-pass dilation gsplat adds to the 2D covariance).
+    (J and eps2d, the low-pass dilation of the 2D covariance, are exactly those
+    of the projection kernel, including its clamping of J outside the frustum).
     Note |g . (p - mean2d)| <= r * sqrt(Sigma_zz) for a pixel at Mahalanobis
     distance r from the 2D splat, so the depth stays within the Gaussian's extent.
 
@@ -226,12 +229,16 @@ def gaussian_depth_planes(
 
     x, y = mus[..., 0], mus[..., 1]
     z = mus[..., 2].clamp(min=1e-6)
-    fx = Ks[:, 0, 0][:, None]
-    fy = Ks[:, 1, 1][:, None]
+    fx, fy = Ks[:, 0, 0][:, None], Ks[:, 1, 1][:, None]
+    cx, cy = Ks[:, 0, 2][:, None], Ks[:, 1, 2][:, None]
+    # clamp the direction to the (slightly enlarged) frustum, as the projection kernel
+    tan_fovx, tan_fovy = 0.5 * width / fx, 0.5 * height / fy
+    xz = torch.minimum(torch.maximum(x / z, -(cx / fx + 0.3 * tan_fovx)), (width - cx) / fx + 0.3 * tan_fovx)
+    yz = torch.minimum(torch.maximum(y / z, -(cy / fy + 0.3 * tan_fovy)), (height - cy) / fy + 0.3 * tan_fovy)
     zeros = torch.zeros_like(z)
     J = torch.stack([
-        torch.stack([fx / z, zeros, -fx * x / (z * z)], dim=-1),
-        torch.stack([zeros, fy / z, -fy * y / (z * z)], dim=-1),
+        torch.stack([fx / z, zeros, -fx * xz / z], dim=-1),
+        torch.stack([zeros, fy / z, -fy * yz / z], dim=-1),
     ], dim=-2)                                                     # [C, N, 2, 3]
 
     cov2d = J @ Sigma @ J.transpose(-1, -2)                        # [C, N, 2, 2]
@@ -268,8 +275,8 @@ def rasterization_hybrid(
     cull_occluded: bool = True,
 ) -> Dict[str, Tensor]:
     """
-    Mirrors gsplat.rendering.rasterization (non-packed, classic, pinhole,
-    render_mode="RGB+D"), with the two-layer hybrid compositing step.
+    Same pipeline as gsplat.rendering.rasterization (non-packed, classic,
+    pinhole, render_mode="RGB+D"), with the two-layer hybrid compositing step.
 
     With `cull_occluded`, Gaussians that are certainly hidden behind the mesh in
     a fully covered tile are removed from that tile's list before compositing
@@ -290,22 +297,19 @@ def rasterization_hybrid(
     assert Ks.shape == (C, 3, 3), Ks.shape
 
     # project Gaussians to 2D
-    radii, means2d, depths, conics, _ = fully_fused_projection(
+    radii, means2d, depths, conics = fully_fused_projection(
         means,
-        None,
         quats,
         scales,
+        opacities,  # tighter bound for radii
         viewmats,
         Ks,
         width,
         height,
         eps2d=eps2d,
-        packed=False,
         near_plane=near_plane,
         far_plane=far_plane,
         radius_clip=radius_clip,
-        calc_compensations=False,
-        opacities=opacities,  # tighter bound for radii
     )
     opacities = opacities.repeat(C, 1)  # [C, N]
 
@@ -321,7 +325,7 @@ def rasterization_hybrid(
     colors = torch.cat([colors, depths[..., None]], dim=-1)  # [C, N, 4]
 
     # per-pixel depth model of the Gaussians, for the soft depth test
-    planes = gaussian_depth_planes(means, quats, scales, viewmats, Ks, eps2d=eps2d)
+    planes = gaussian_depth_planes(means, quats, scales, viewmats, Ks, width, height, eps2d=eps2d)
 
     # tile intersections, sorted front-to-back within each tile
     tile_width = math.ceil(width / float(tile_size))
@@ -333,8 +337,6 @@ def rasterization_hybrid(
         tile_size,
         tile_width,
         tile_height,
-        packed=False,
-        n_cameras=C,
     )
     isect_offsets = isect_offset_encode(isect_ids, C, tile_width, tile_height)
 

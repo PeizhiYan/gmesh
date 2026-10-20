@@ -64,6 +64,78 @@ rasterize_hybrid_bwd(
 
 } // namespace gmesh
 
+// Gaussian projection, tile intersection and spherical harmonics, adapted from
+// gsplat (Apache-2.0); see ./gsplat/GsplatOps.cpp
+namespace gmesh_gsplat {
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> projection_fwd(
+    const at::Tensor means,
+    const at::Tensor quats,
+    const at::Tensor scales,
+    const at::Tensor opacities,
+    const at::Tensor viewmats,
+    const at::Tensor Ks,
+    const int64_t image_width,
+    const int64_t image_height,
+    const double eps2d,
+    const double near_plane,
+    const double far_plane,
+    const double radius_clip
+);
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> projection_bwd(
+    const at::Tensor means,
+    const at::Tensor quats,
+    const at::Tensor scales,
+    const at::Tensor viewmats,
+    const at::Tensor Ks,
+    const int64_t image_width,
+    const int64_t image_height,
+    const double eps2d,
+    const at::Tensor radii,
+    const at::Tensor conics,
+    const at::Tensor v_means2d,
+    const at::Tensor v_depths,
+    const at::Tensor v_conics,
+    const bool viewmats_requires_grad
+);
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor> isect_tiles(
+    const at::Tensor means2d,
+    const at::Tensor radii,
+    const at::Tensor depths,
+    const int64_t tile_size,
+    const int64_t tile_width,
+    const int64_t tile_height,
+    const bool sort
+);
+
+at::Tensor isect_offset_encode(
+    const at::Tensor isect_ids,
+    const int64_t C,
+    const int64_t tile_width,
+    const int64_t tile_height
+);
+
+at::Tensor sh_fwd(
+    const int64_t degrees_to_use,
+    const at::Tensor dirs,
+    const at::Tensor coeffs,
+    const at::optional<at::Tensor> masks
+);
+
+std::tuple<at::Tensor, at::Tensor> sh_bwd(
+    const int64_t K,
+    const int64_t degrees_to_use,
+    const at::Tensor dirs,
+    const at::Tensor coeffs,
+    const at::optional<at::Tensor> masks,
+    const at::Tensor v_colors,
+    const bool compute_v_dirs
+);
+
+} // namespace gmesh_gsplat
+
 #define CHECK_CUDA(x) TORCH_CHECK(x.is_cuda(), #x " must be a CUDA tensor")
 #define CHECK_CONTIGUOUS(x)                                                    \
     TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
@@ -226,6 +298,18 @@ rasterize_hybrid_bwd(
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    // adapted from gsplat (Apache-2.0), see ./gsplat
+    m.def("projection_fwd", &gmesh_gsplat::projection_fwd,
+          "EWA projection of 3D Gaussians (pinhole camera), forward");
+    m.def("projection_bwd", &gmesh_gsplat::projection_bwd,
+          "EWA projection of 3D Gaussians (pinhole camera), backward");
+    m.def("isect_tiles", &gmesh_gsplat::isect_tiles,
+          "Tile intersections of the projected Gaussians, sorted by tile and depth");
+    m.def("isect_offset_encode", &gmesh_gsplat::isect_offset_encode,
+          "Start offset of each tile in the sorted intersections");
+    m.def("sh_fwd", &gmesh_gsplat::sh_fwd, "Spherical harmonics, forward");
+    m.def("sh_bwd", &gmesh_gsplat::sh_bwd, "Spherical harmonics, backward");
+
     m.def(
         "rasterize_mesh_fwd",
         &rasterize_mesh_fwd,

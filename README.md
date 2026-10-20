@@ -23,7 +23,8 @@
 
 - Combining Gaussians and meshes lets you leverage the strengths of both for more flexible and realistic 3D scene rendering.
 - Gmesh supports differentiable rendering of mixed 3D Gaussians and meshes within a single scene.
-- Built on gsplat and its own differentiable mesh rasterizer, Gmesh is fully PyTorch-native.
+- Gmesh is fully PyTorch-native and self-contained: one CUDA extension with its own differentiable mesh rasterizer,
+  hybrid compositing, and 3DGS projection kernels adapted from [gsplat](https://github.com/nerfstudio-project/gsplat).
 
 
 ## Examples
@@ -31,7 +32,7 @@
 Please see ```./examples```:
 
 1. 3D Mesh Rendering: [Link](./examples/example-1%20-%20mesh%20rendering.ipynb)
-2. 3DGS via gsplat: [Link](./examples/example-2%20-%20gaussian%20splatting.ipynb)
+2. 3D Gaussian Splatting: [Link](./examples/example-2%20-%20gaussian%20splatting.ipynb)
 3. Hybrid Gaussians and Mesh Rendering via Gmesh: [Link](./examples/example-3%20-%20gmesh%20hybrid%20rendering.ipynb)
 4. Toy Training through the Hybrid Renderer (Gaussians, mesh, and both): [Link](./examples/example-4%20-%20toy%20training.ipynb)
 
@@ -61,7 +62,8 @@ pip install --no-build-isolation -e .
 
 > [!TIP]
 > I have only tested the following library versions:
-> ```CUDA 11.7```, ```PyTorch 2.0.1```, and ```gsplat v1.5.2```.
+> ```CUDA 11.7``` and ```PyTorch 2.0.1```. gsplat is not needed (only optionally, to run the tests that
+> compare Gmesh's ported kernels with it).
 > The CUDA extension of Gmesh is JIT-compiled the first time it is used (this needs `nvcc` and `ninja`,
 > installed above, and takes about a minute).
 > If you encounter any issues or unexpected results, please double-check that you have installed the correct versions.
@@ -72,7 +74,7 @@ pip install --no-build-isolation -e .
 ```
 mesh ──► mesh rasterizer ──► coverage a_m, color c_m, depth D (antialiased, per pixel)
                                         │
-3DGS ──► gsplat projection ──► hybrid compositing (soft depth test vs. D) ──► front layer, back layer
+3DGS ──► EWA projection    ──► hybrid compositing (soft depth test vs. D) ──► front layer, back layer
                                         │
                                         ▼
             C = C_front + T_front * (a_m * c_m + (1 - a_m) * (C_back + T_back * bg))
@@ -81,7 +83,7 @@ mesh ──► mesh rasterizer ──► coverage a_m, color c_m, depth D (antia
 ### Mesh rasterizer
 
 Meshes are rasterized by Gmesh's own differentiable rasterizer (`gmesh/renderer/rasterizer_mesh.py`), using exactly the
-same pinhole camera and pixel convention as gsplat:
+same pinhole camera and pixel convention as the Gaussians:
 
 1. Triangles are binned into 16x16 tiles, and a CUDA kernel finds the nearest triangle at each pixel center (z-buffer).
    This visibility decision is the only non-differentiable step.
@@ -127,7 +129,8 @@ C = C_front + T_front * (a_m * c_m + (1 - a_m) * (C_back + T_back * bg))
   where the mesh hides many Gaussians.
 
 The compositing is a custom CUDA kernel (forward and backward, `gmesh/renderer/csrc/rasterize_hybrid.cu`); the
-projection, spherical harmonics and tile sorting stages are gsplat's, and the depth model is computed in PyTorch.
+projection, spherical harmonics and tile sorting kernels are adapted from gsplat v1.5.2 (`gmesh/renderer/csrc/gsplat`,
+see the Acknowledgement), and the depth model is computed in PyTorch.
 
 ```python
 gmesh_renderer = GmeshRenderer(camera=camera, tile_size=16, bg_color=(1.0, 1.0, 1.0), softness=1.0,
@@ -166,16 +169,19 @@ It prints the loss and the PSNR on 6 held-out views (and the remaining mesh tran
 
 ## Tests
 
-The tests need a CUDA GPU (the renderer tests also need open3d to read the example mesh):
+The tests need a CUDA GPU (the renderer tests also need open3d to read the example mesh). The tests that compare
+Gmesh's ported kernels with gsplat itself need gsplat v1.5.2 and are skipped without it:
 
 ```bash
+pip install git+https://github.com/nerfstudio-project/gsplat.git@v1.5.2   # optional, for the comparisons
 python -m pytest tests -v
 ```
 
-They check the hybrid compositing against gsplat (no mesh) and against a brute-force PyTorch reference (with a mesh),
-for both the forward pass and the gradients; that occlusion culling does not change the result; the mesh rasterizer
-against a brute-force rasterizer, supersampling (antialiasing) and finite-difference gradients; and that the mesh is
-pixel- and depth-aligned with gsplat.
+They check the ported projection, tile intersection, spherical harmonics and plain 3DGS rendering against gsplat
+(forward and gradients); the hybrid compositing against gsplat (no mesh) and against a brute-force PyTorch reference
+(with a mesh), for both the forward pass and the gradients; that occlusion culling does not change the result; the
+mesh rasterizer against a brute-force rasterizer, supersampling (antialiasing) and finite-difference gradients; and
+that the mesh is pixel- and depth-aligned with the Gaussians.
 
 
 ## Benchmark
@@ -184,7 +190,7 @@ pixel- and depth-aligned with gsplat.
 python benchmarks/benchmark_renderer.py --width 1024 --height 768 --extra-gaussians 200000 --backward
 ```
 
-Times (per frame, forward and forward + backward) the Gmesh mesh rasterizer, gsplat alone, the hybrid renderer
+Times (per frame, forward and forward + backward) the Gmesh mesh rasterizer, plain 3DGS, the hybrid renderer
 (with and without antialiasing / occlusion culling), and, for reference, the mesh and the Gaussians rendered
 separately (without occlusion between them).
 
@@ -234,6 +240,13 @@ python interactive_demo.py
 
 
 ## Acknowledgement and Disclaimer
+
+Gmesh's 3D Gaussian projection, tile intersection and spherical harmonics kernels, and parts of its hybrid compositing
+kernels, are adapted from [gsplat](https://github.com/nerfstudio-project/gsplat) v1.5.2 (Copyright the gsplat authors,
+Apache License 2.0); see [gmesh/renderer/csrc/gsplat/README.md](./gmesh/renderer/csrc/gsplat/README.md) for the list of
+files and changes, and [its license](./gmesh/renderer/csrc/gsplat/LICENSE). These kernels use
+[GLM](https://github.com/g-truc/glm) (MIT License), included in `gmesh/renderer/csrc/third_party/glm`. If you use Gmesh,
+please also cite gsplat.
 
 The code can be used for research purposes, **provided that the terms of the licenses of any third-party libraries, data or dependencies are followed**. For commercial use, the parts of code we wrote are for free, but please be aware to get permissions from any third-party to use their code or dependencies. We do not assume any responsibility for any issues, damages, or liabilities that may arise from the use of this code. Users are responsible for ensuring compliance with any legal requirements, including licensing terms and conditions, and for verifying that the code is suitable for their intended purposes.
 

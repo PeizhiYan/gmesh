@@ -4,12 +4,11 @@
 #
 
 import torch
-from gsplat.rendering import rasterization
 
 from gmesh.scenes.gaussians import Gaussians
 from gmesh.scenes.cameras import PerspectiveCamera
-# from utils.graphics_utils import build_view_matrix
 from gmesh.renderer.rasterizer_hybrid import rasterization_hybrid
+
 
 class GaussianRasterizer:
 
@@ -27,7 +26,7 @@ class GaussianRasterizer:
                   camera_pose : torch.Tensor,
                   ):
         """
-        Rasterize 3D Gaussians from multiple camera views.
+        Rasterize 3D Gaussians from multiple camera views (plain 3DGS, no mesh).
 
         Args:
             gaussians (Gaussians): Contains means, quats, scales, opacities, colors, sh_degree.
@@ -36,8 +35,8 @@ class GaussianRasterizer:
                 - for OrbitCamera, [B, 3] (elevation, azimuth, distance).
 
         Returns:
-            rgb (torch.Tensor):   [B, H, W, 3]
-            depth (torch.Tensor): [B, H, W, 1]
+            rgb (torch.Tensor):   [B, H, W, 3]  composited over the background color
+            depth (torch.Tensor): [B, H, W, 1]  expected depth (normalized by alpha)
             alpha (torch.Tensor): [B, H, W, 1]
 
         Notes:
@@ -47,37 +46,22 @@ class GaussianRasterizer:
         """
         batch_size = camera_pose.shape[0]
         device = gaussians.device
-        bg_tensor = torch.tensor(self.bg_color).view(1, 3).repeat(batch_size, 1).to(device) # [B, 3]
+        H, W = self.image_height, self.image_width
 
-        # get intrinsic matrix
-        Ks = self.camera.get_intrinsic_matrix(batch_size=batch_size) # [B, 3, 3]
-
-        # build view matrix
-        viewmats = self.camera.get_view_matrix(camera_pose)
-
-        # rasterize through gsplat
-        render_colors, render_alphas, meta = rasterization(
-            means = gaussians.means,            # [N, 3]
-            quats = gaussians.quats,            # [N, 4]
-            scales = gaussians.scales,          # [N, 3]
-            opacities = gaussians.opacities,    # [N]
-            colors = gaussians.colors,          # [N, S, 3]
-            viewmats = viewmats,                # [B, 4, 4]
-            Ks = Ks,                            # [B, 3, 3]
-            width=self.image_width, 
-            height=self.image_height, 
-            sh_degree=gaussians.sh_degree,
-            near_plane=self.z_near,
-            far_plane=self.z_far,
-            tile_size=self.tile_size,
-            backgrounds=bg_tensor,              # [B, 3]
-            render_mode="RGB+ED", packed=False, distributed=False
+        # without a mesh (infinite depth limit, zero coverage) the hybrid
+        # rasterizer reduces to plain 3DGS (its front layer)
+        layers = self.rasterize_hybrid(
+            gaussians=gaussians,
+            camera_pose=camera_pose,
+            depth_limits=torch.full((batch_size, H, W), float('inf'), device=device),
+            coverages=torch.zeros((batch_size, H, W), device=device),
+            cull_occluded=False,
         )
-
-        rgb = render_colors[:,:,:,:3]    # [B, H, W, 3]
-        depth = render_colors[:,:,:,3:4] # [B, H, W, 1]
-        alpha = render_alphas[:,:,:,:1]  # [B, H, W, 1]
-
+        bg = torch.tensor(self.bg_color, dtype=torch.float32, device=device).view(1, 1, 1, 3)
+        front, T = layers['front'], layers['T_front']
+        alpha = 1.0 - T                                         # [B, H, W, 1]
+        rgb = front[..., :3] + T * bg                           # [B, H, W, 3]
+        depth = front[..., 3:4] / alpha.clamp(min=1e-10)        # [B, H, W, 1]
         return rgb, depth, alpha
 
     def rasterize_hybrid(self,

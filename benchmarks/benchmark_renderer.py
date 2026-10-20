@@ -15,7 +15,7 @@ Usage (from the repository root):
     python benchmarks/benchmark_renderer.py --width 1920 --height 1080 --extra-gaussians 500000 --backward
 
 Reports the average time per frame (CUDA events) of each pipeline, forward only
-and, with --backward, forward + backward. For reference, it also times gsplat
+and, with --backward, forward + backward. For reference, it also times plain 3DGS
 alone and the mesh and Gaussians rendered separately (without any occlusion
 between them).
 """
@@ -36,7 +36,7 @@ from gmesh.scenes.gaussians import Gaussians
 from gmesh.scenes.cameras import PerspectiveCamera
 from gmesh.renderer.gmesh_renderer import GmeshRenderer
 from gmesh.renderer.rasterizer_mesh import MeshRenderer
-from gmesh.renderer.rasterizer_gsplat import GaussianRasterizer
+from gmesh.renderer.rasterizer_gaussians import GaussianRasterizer
 from gmesh.renderer.mesh_shader import simple_phone_shading
 from gmesh.utils.mesh2gaussians_utils import mesh_to_gaussians
 
@@ -118,7 +118,7 @@ def main():
 
     mesh_aa = MeshRenderer(camera=camera, bg_color=bg, antialias=True)
     mesh_no_aa = MeshRenderer(camera=camera, bg_color=bg, antialias=False)
-    gsplat_rasterizer = GaussianRasterizer(camera=camera, bg_color=bg)
+    gaussian_rasterizer = GaussianRasterizer(camera=camera, bg_color=bg)
     hybrid = GmeshRenderer(camera=camera, bg_color=bg, antialias=True, cull_occluded=True)
     hybrid_no_cull = GmeshRenderer(camera=camera, bg_color=bg, antialias=True, cull_occluded=False)
     hybrid_no_aa = GmeshRenderer(camera=camera, bg_color=bg, antialias=False, cull_occluded=True)
@@ -126,17 +126,17 @@ def main():
     def separate(mesh, gaussians):
         # mesh and Gaussians rendered on their own, without any occlusion between them
         rgb_m, depth_m, alpha_m = mesh_aa.render(mesh=mesh, camera_pose=camera_pose)
-        rgb_g, depth_g, alpha_g = gsplat_rasterizer.rasterize(gaussians=gaussians, camera_pose=camera_pose)
+        rgb_g, depth_g, alpha_g = gaussian_rasterizer.rasterize(gaussians=gaussians, camera_pose=camera_pose)
         return rgb_m + rgb_g, depth_m + depth_g, alpha_m + alpha_g
 
     cases = [
         ("mesh only", "Gmesh mesh rasterizer (antialiased)", lambda m, g: mesh_aa.render(mesh=m, camera_pose=camera_pose)),
         ("mesh only", "Gmesh mesh rasterizer (no AA)", lambda m, g: mesh_no_aa.render(mesh=m, camera_pose=camera_pose)),
-        ("3DGS only", "gsplat", lambda m, g: gsplat_rasterizer.rasterize(gaussians=g, camera_pose=camera_pose)),
+        ("3DGS only", "GaussianRasterizer (plain 3DGS)", lambda m, g: gaussian_rasterizer.rasterize(gaussians=g, camera_pose=camera_pose)),
         ("hybrid", "GmeshRenderer (AA + culling, default)", lambda m, g: hybrid.render(mesh=m, gaussians=g, camera_pose=camera_pose)),
         ("hybrid", "GmeshRenderer (AA, no culling)", lambda m, g: hybrid_no_cull.render(mesh=m, gaussians=g, camera_pose=camera_pose)),
         ("hybrid", "GmeshRenderer (no AA, culling)", lambda m, g: hybrid_no_aa.render(mesh=m, gaussians=g, camera_pose=camera_pose)),
-        ("reference", "mesh + gsplat, separately (no occlusion)", separate),
+        ("reference", "mesh + 3DGS, separately (no occlusion)", separate),
     ]
 
     n_gaussians = gaussian_params[0].shape[0]
