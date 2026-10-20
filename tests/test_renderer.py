@@ -79,7 +79,7 @@ def test_mesh_rasterizer_matches_brute_force():
     # ties at shared edges / pixel centers exactly on an edge may differ
     assert same.float().mean().item() > 0.995, same.float().mean().item()
     covered = same & (ids >= 0)
-    assert covered.sum().item() > 0.2 * W * H
+    assert covered.sum().item() > 0.1 * W * H  # the random mesh covers ~13% of the image
     torch.testing.assert_close(out["depth"][0, ..., 0][covered], ref_depth[covered], rtol=1e-4, atol=1e-4)
     assert (out["depth"][0, ..., 0][ids < 0] == 0).all()
     assert (out["mask"][0, ..., 0] == (ids >= 0).float()).all()

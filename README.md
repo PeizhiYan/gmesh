@@ -65,7 +65,8 @@ pip install --no-build-isolation -e .
 > ```CUDA 11.7``` and ```PyTorch 2.0.1```. gsplat is not needed (only optionally, to run the tests that
 > compare Gmesh's ported kernels with it).
 > The CUDA extension of Gmesh is JIT-compiled the first time it is used (this needs `nvcc` and `ninja`,
-> installed above, and takes about a minute).
+> installed above, and takes about a minute). It is built with the `nvcc` that PyTorch finds through `CUDA_HOME`
+> (or `CUDA_PATH`, which a system-wide CUDA install sets on Windows); set `CUDA_HOME` to choose the toolkit.
 > If you encounter any issues or unexpected results, please double-check that you have installed the correct versions.
 
 
