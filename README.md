@@ -112,6 +112,11 @@ in front of the mesh depth `D` is
 f = Phi((D - z*(p)) / (sigma * softness))
 ```
 
+<p align="left">
+    <img src="./assets/two_layer_gaussian_mesh_blending.png" width="650px" />
+</p>
+
+
 The front parts (`alpha * f`) and back parts (`alpha * (1 - f)`) are alpha-composited into two layers, in the usual
 sorted 3DGS order, and combined with the opaque mesh (coverage `a_m`, color `c_m`):
 
@@ -207,7 +212,7 @@ python interactive_demo.py
 
 <p align="center">
     <a href="https://www.youtube.com/watch?v=iVwSZtwr9GI">
-        <img src="https://img.youtube.com/vi/iVwSZtwr9GI/0.jpg" alt="GMesh Demo Video" width="300px" height="auto"/>
+        <img src="https://img.youtube.com/vi/iVwSZtwr9GI/0.jpg" alt="GMesh Demo Video" width="400px" height="auto"/>
     </a>
     <br>
     <a href="https://www.youtube.com/watch?v=iVwSZtwr9GI">Watch the demo video on YouTube</a>
