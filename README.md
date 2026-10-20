@@ -228,9 +228,10 @@ python interactive_demo.py
 - One opaque mesh layer (no transparent meshes).
 - Edge antialiasing is a per-axis 1D approximation (exact for straight edges away from corners).
 - No near-plane clipping of triangles.
-- 3D Gaussians' are not relightable.
-- Does not support mesh opacity.
-- Does not support mesh texture map.
+- 3D Gaussians are not relightable (fixed SH colors).
+- No mesh texture maps (per-vertex colors only).
+- No lighting in the renderer: mesh shading is baked into the vertex colors and does not follow the camera.
+- No mesh opacity (the mesh is fully opaque).
 - Does not support batch rendering.
 
 ### Todos:
