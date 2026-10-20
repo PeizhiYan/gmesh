@@ -37,7 +37,7 @@ from gmesh.scenes.cameras import PerspectiveCamera
 from gmesh.renderer.gmesh_renderer import GmeshRenderer
 from gmesh.renderer.rasterizer_mesh import MeshRenderer
 from gmesh.renderer.rasterizer_gsplat import GaussianRasterizer
-from gmesh.renderer.shader import simple_phone_shading
+from gmesh.renderer.mesh_shader import simple_phone_shading
 from gmesh.utils.mesh2gaussians_utils import mesh_to_gaussians
 
 

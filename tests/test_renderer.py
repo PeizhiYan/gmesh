@@ -249,7 +249,7 @@ def test_mesh_is_pixel_aligned_with_gaussians(width, height):
 def _spot_scene(W=256, H=128):
     from gmesh.scenes.mesh import Mesh
     from gmesh.scenes.cameras import PerspectiveCamera
-    from gmesh.renderer.shader import simple_phone_shading
+    from gmesh.renderer.mesh_shader import simple_phone_shading
 
     vertices, faces = load_spot()
     mesh = Mesh(verts=vertices, faces=faces)

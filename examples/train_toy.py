@@ -51,7 +51,7 @@ from gmesh.scenes.mesh import Mesh
 from gmesh.scenes.gaussians import Gaussians
 from gmesh.scenes.cameras import OrbitCamera
 from gmesh.renderer.gmesh_renderer import GmeshRenderer
-from gmesh.renderer.shader import simple_phone_shading
+from gmesh.renderer.mesh_shader import simple_phone_shading
 
 SH_C0 = 0.28209479177387814  # rgb = 0.5 + SH_C0 * sh (degree 0)
 

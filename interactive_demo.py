@@ -26,7 +26,7 @@ from gmesh.scenes.mesh import Mesh
 from gmesh.scenes.gaussians import Gaussians
 from gmesh.scenes.cameras import PerspectiveCamera, OrbitCamera
 from gmesh.renderer.gmesh_renderer import GmeshRenderer
-from gmesh.renderer.shader import simple_phone_shading
+from gmesh.renderer.mesh_shader import simple_phone_shading
 
 
 
