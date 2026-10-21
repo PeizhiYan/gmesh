@@ -1,4 +1,4 @@
 
 ## Version information
-__VERSION__ = "v1.0"
+__version__ = "1.0"
 
