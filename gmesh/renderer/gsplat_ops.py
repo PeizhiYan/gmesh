@@ -35,8 +35,8 @@ class _FullyFusedProjection(torch.autograd.Function):
         quats: Tensor,      # [N, 4]
         scales: Tensor,     # [N, 3]
         opacities: Tensor,  # [N]
-        viewmats: Tensor,   # [C, 4, 4]
-        Ks: Tensor,         # [C, 3, 3]
+        viewmats: Tensor,   # [B, 4, 4]
+        Ks: Tensor,         # [B, 3, 3]
         width: int,
         height: int,
         eps2d: float,
@@ -82,8 +82,8 @@ def fully_fused_projection(
     quats: Tensor,      # [N, 4] (need not be normalized)
     scales: Tensor,     # [N, 3]
     opacities: Tensor,  # [N], used for an opacity-aware bounding box
-    viewmats: Tensor,   # [C, 4, 4] world-to-camera
-    Ks: Tensor,         # [C, 3, 3]
+    viewmats: Tensor,   # [B, 4, 4] world-to-camera
+    Ks: Tensor,         # [B, 3, 3]
     width: int,
     height: int,
     eps2d: float = 0.3,
@@ -99,19 +99,19 @@ def fully_fused_projection(
     are ignored by the later stages.
 
     Returns:
-        radii:   [C, N, 2] int32 bounding-box radii in pixels (0: culled)
-        means2d: [C, N, 2] projected means
-        depths:  [C, N] camera-space depths
-        conics:  [C, N, 3] inverse of the 2D covariances (upper triangle)
+        radii:   [B, N, 2] int32 bounding-box radii in pixels (0: culled)
+        means2d: [B, N, 2] projected means
+        depths:  [B, N] camera-space depths
+        conics:  [B, N, 3] inverse of the 2D covariances (upper triangle)
     """
-    C = viewmats.size(0)
+    B = viewmats.size(0)
     N = means.size(0)
     assert means.size() == (N, 3), means.size()
     assert quats.size() == (N, 4), quats.size()
     assert scales.size() == (N, 3), scales.size()
     assert opacities.size() == (N,), opacities.size()
-    assert viewmats.size() == (C, 4, 4), viewmats.size()
-    assert Ks.size() == (C, 3, 3), Ks.size()
+    assert viewmats.size() == (B, 4, 4), viewmats.size()
+    assert Ks.size() == (B, 3, 3), Ks.size()
     return _FullyFusedProjection.apply(
         means.contiguous(), quats.contiguous(), scales.contiguous(), opacities.contiguous(),
         viewmats.contiguous(), Ks.contiguous(),
@@ -163,9 +163,9 @@ def spherical_harmonics(
 
 @torch.no_grad()
 def isect_tiles(
-    means2d: Tensor,  # [C, N, 2]
-    radii: Tensor,    # [C, N, 2]
-    depths: Tensor,   # [C, N]
+    means2d: Tensor,  # [B, N, 2]
+    radii: Tensor,    # [B, N, 2]
+    depths: Tensor,   # [B, N]
     tile_size: int,
     tile_width: int,
     tile_height: int,
@@ -175,14 +175,14 @@ def isect_tiles(
     Maps projected Gaussians to the image tiles they overlap.
 
     Returns:
-        tiles_per_gauss: [C, N] int32 number of tiles per Gaussian
+        tiles_per_gauss: [B, N] int32 number of tiles per Gaussian
         isect_ids:       [n_isects] int64 camera id | tile id | depth, sorted if `sort`
-        flatten_ids:     [n_isects] int32 index into [C * N]
+        flatten_ids:     [n_isects] int32 index into [B * N]
     """
-    C, N, _ = means2d.shape
-    assert means2d.shape == (C, N, 2), means2d.size()
-    assert radii.shape == (C, N, 2), radii.size()
-    assert depths.shape == (C, N), depths.size()
+    B, N, _ = means2d.shape
+    assert means2d.shape == (B, N, 2), means2d.size()
+    assert radii.shape == (B, N, 2), radii.size()
+    assert depths.shape == (B, N), depths.size()
     return load_extension().isect_tiles(
         means2d.contiguous(), radii.contiguous(), depths.contiguous(),
         int(tile_size), int(tile_width), int(tile_height), bool(sort),
@@ -191,7 +191,7 @@ def isect_tiles(
 
 @torch.no_grad()
 def isect_offset_encode(isect_ids: Tensor, n_cameras: int, tile_width: int, tile_height: int) -> Tensor:
-    """Start offset of each tile in the sorted intersections. [C, tile_height, tile_width] int32"""
+    """Start offset of each tile in the sorted intersections. [B, tile_height, tile_width] int32"""
     return load_extension().isect_offset_encode(
         isect_ids.contiguous(), int(n_cameras), int(tile_width), int(tile_height)
     )
