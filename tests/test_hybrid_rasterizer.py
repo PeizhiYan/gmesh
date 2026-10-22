@@ -19,7 +19,7 @@ import torch
 if not torch.cuda.is_available():
     pytest.skip("CUDA is required", allow_module_level=True)
 
-from gmesh.renderer.rasterizer_hybrid import rasterize_to_pixels_hybrid
+from gmesh.renderer.rasterizer_gaussians import rasterize_to_pixels_hybrid
 
 from common import (
     DEVICE, assert_close, leaves, pixel_centers, random_scene, random_weights, tile_membership,
@@ -205,7 +205,7 @@ def test_split_is_continuous():
 
 def test_occlusion_culling_is_exact():
     """Culling hidden Gaussians in fully covered tiles does not change the result."""
-    from gmesh.renderer.rasterizer_hybrid import rasterization_hybrid
+    from gmesh.renderer.rasterizer_gaussians import rasterization_hybrid
 
     g = torch.Generator().manual_seed(5)
     N, W, H = 300, 96, 64

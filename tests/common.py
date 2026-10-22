@@ -12,7 +12,7 @@ import pytest
 import torch
 
 from gmesh.renderer.gsplat_ops import fully_fused_projection, isect_offset_encode, isect_tiles
-from gmesh.renderer.rasterizer_hybrid import gaussian_depth_planes
+from gmesh.renderer.rasterizer_gaussians import gaussian_depth_planes
 
 
 DEVICE = "cuda"

@@ -3,14 +3,51 @@
 # Copyright (C) 2026
 #
 
+from typing import Dict
+
 import torch
+from torch import Tensor
 
 from gmesh.scenes.mesh import Mesh
 from gmesh.scenes.gaussians import Gaussians
 from gmesh.scenes.cameras import PerspectiveCamera
 from gmesh.renderer.rasterizer_mesh import MeshRenderer
 from gmesh.renderer.rasterizer_gaussians import GaussianRasterizer
-from gmesh.renderer.rasterizer_hybrid import composite_hybrid
+
+
+def composite_hybrid(
+    layers: Dict[str, Tensor],
+    mesh_color: Tensor,    # [B, H, W, 3] mesh color premultiplied by the coverage (a_m * c_m)
+    mesh_depth: Tensor,    # [B, H, W, 1]
+    mesh_alpha: Tensor,    # [B, H, W, 1] mesh coverage a_m
+    bg_color,
+):
+    """
+    Differentiable
+
+    Combine the Gaussian layers (channels [R, G, B, depth]) with the mesh:
+
+        C = C_front + T_front * (a_m * c_m + (1 - a_m) * (C_back + T_back * bg))
+
+    Returns:
+        rgb:   [B, H, W, 3]
+        depth: [B, H, W, 1] expected depth over Gaussians and mesh
+        alpha: [B, H, W, 1]
+    """
+    if not isinstance(bg_color, torch.Tensor):
+        bg_color = torch.tensor(bg_color, dtype=mesh_color.dtype, device=mesh_color.device)
+    bg_color = bg_color.view(1, 1, 1, 3)
+
+    front, T_f = layers["front"], layers["T_front"]
+    back, T_b = layers["back"], layers["T_back"]
+    a_m = mesh_alpha
+
+    behind_rgb = mesh_color + (1.0 - a_m) * (back[..., :3] + T_b * bg_color)
+    rgb = front[..., :3] + T_f * behind_rgb
+    alpha = 1.0 - T_f * (1.0 - a_m) * T_b
+    depth_acc = front[..., 3:4] + T_f * (a_m * mesh_depth + (1.0 - a_m) * back[..., 3:4])
+    depth = depth_acc / alpha.clamp(min=1e-10)
+    return rgb, depth, alpha
 
 
 class GmeshRenderer:
