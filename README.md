@@ -73,14 +73,9 @@ pip install --no-build-isolation -e .
 
 ## Design Details
 
-```
-mesh ──► mesh rasterizer ──► coverage a_m, color c_m, depth D (antialiased, per pixel)
-                                        │
-3DGS ──► EWA projection    ──► hybrid compositing (soft depth test vs. D) ──► front layer, back layer
-                                        │
-                                        ▼
-            C = C_front + T_front * (a_m * c_m + (1 - a_m) * (C_back + T_back * bg))
-```
+<p align="center">
+    <img src="./assets/pipeline-v1.0.png" width="888" />
+</p>
 
 ### Mesh rasterizer
 
@@ -211,11 +206,11 @@ python interactive_demo.py
 ```
 
 <p align="center">
-    <a href="https://www.youtube.com/watch?v=iVwSZtwr9GI">
-        <img src="https://img.youtube.com/vi/iVwSZtwr9GI/0.jpg" alt="GMesh Demo Video" width="400px" height="auto"/>
+    <a href="https://youtu.be/LhAtS1K2f9s?si=XhwSXLdoVl6Wql-9">
+        <img src="https://img.youtube.com/vi/LhAtS1K2f9s/0.jpg" alt="GMesh Demo Video" width="500px" height="auto"/>
     </a>
     <br>
-    <a href="https://www.youtube.com/watch?v=iVwSZtwr9GI">Watch the demo video on YouTube</a>
+    <a href="https://youtu.be/LhAtS1K2f9s?si=XhwSXLdoVl6Wql-9">Watch the demo video on YouTube</a>
 </p>
 
 
