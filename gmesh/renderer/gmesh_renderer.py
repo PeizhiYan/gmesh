@@ -57,7 +57,8 @@ class GmeshRenderer:
                  bg_color = (1.0, 1.0, 1.0), 
                  softness = 1.0,
                  antialias = True, 
-                 cull_occluded = True):
+                 cull_occluded = True,
+                 texture_filter = "mipmap"):
         """
         Differentiable hybrid renderer for 3D Gaussians and triangle meshes.
 
@@ -71,6 +72,8 @@ class GmeshRenderer:
                 and gradients at silhouettes).
             cull_occluded (bool): skip Gaussians certainly hidden behind tiles fully covered
                 by the mesh (does not change the result, saves time).
+            texture_filter (str): texture sampling of textured meshes, "mipmap" (trilinear,
+                no aliasing when minified) or "bilinear".
         """
         self.camera = camera
         self.image_height = camera.image_height
@@ -82,7 +85,7 @@ class GmeshRenderer:
         self.softness = softness            # width of the soft depth test, relative to the Gaussians' extent
         self.cull_occluded = cull_occluded  # skip Gaussians certainly hidden behind fully covered tiles
         self.mesh_renderer = MeshRenderer(camera=camera, tile_size=tile_size, bg_color=bg_color,
-                                          antialias=antialias) # setup mesh renderer (antialiased mesh edges)
+                                          antialias=antialias, texture_filter=texture_filter) # setup mesh renderer (antialiased mesh edges)
         self.gaussian_rasterizer = GaussianRasterizer(camera=camera, tile_size=tile_size, bg_color=bg_color) # setup 3DGS rasterizer
 
     def render(self,
@@ -102,7 +105,7 @@ class GmeshRenderer:
         mesh silhouettes, and differentiable w.r.t. the Gaussians and the mesh.
 
         Args:
-            mesh (Mesh): Contains vertices, faces, colors
+            mesh (Mesh): Contains vertices, faces, and vertex colors or a texture map
             gaussians (Gaussians): Contains means, quats, scales, opacities, colors, sh_degree.
             camera_pose (torch.Tensor):
                 - for PerspectiveCamera, [B,6] (yaw, pitch, roll, dx, dy, dz);

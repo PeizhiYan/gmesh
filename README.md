@@ -11,6 +11,14 @@
 
 **Current Version**: v1.0 (October 23, 2026)
 
+### What's new in v1.1 (in progress)
+- Textured meshes: a mesh is colored either by its vertex colors or by a texture map (with per-corner texture
+  coordinates, as in OBJ files). Texture sampling is differentiable w.r.t. the texture map, so textures can be
+  learned, with trilinear mipmapping by default (no aliasing when the texture is minified, and gradients reach all
+  the texels a pixel covers).
+- `gmesh.utils.mesh_io`: OBJ (with texture coordinates) and texture loading, no extra dependencies.
+- Texture learning example (`examples/train_texture.py`).
+
 ### What's new in v1.0
 - Gmesh's own differentiable, tile-based CUDA mesh rasterizer (PyTorch3D is no longer used), with analytic edge
   antialiasing and gradients at silhouettes.
@@ -89,7 +97,12 @@ same pinhole camera and pixel convention as the Gaussians:
    This visibility decision is the only non-differentiable step.
 2. Barycentric coordinates, depth and vertex attributes (colors) are recomputed in PyTorch from the face ids, with
    perspective-correct interpolation, so autograd provides gradients w.r.t. vertex positions and vertex colors.
-
+   For a textured mesh, the texture coordinates are interpolated the same way and the texture is sampled at each pixel
+   (`gmesh/renderer/texture.py`), with gradients w.r.t. the texture map and the texture coordinates:
+   - `texture_filter="mipmap"` (default): trilinear filtering of a mipmap pyramid, with the level of detail of each
+     pixel from the screen-space derivatives of its texture coordinates (as on GPUs).
+   - `texture_filter="bilinear"`: bilinear sampling of the full-resolution texture (sharper when the texture is
+     minified, but it aliases, and only 4 texels per pixel receive gradients).
 3. Edges are antialiased analytically (as in nvdiffrast): for every pair of neighboring pixels that sees a geometric
    discontinuity (a silhouette), the position where the front triangle's edge crosses between the two pixel centers
    gives a fractional coverage (and blends colors over a farther surface). This yields smooth silhouettes and
@@ -172,6 +185,28 @@ It prints the loss and the PSNR on 6 held-out views (and the remaining mesh tran
 (ground truth | initialization | trained) and loss curves to `output/toy_training/`.
 
 
+## Texture Training Example
+
+```bash
+python examples/train_texture.py                      # or: --filter bilinear
+```
+
+Recovers the texture map of the textured Spot mesh (`assets/data/spot`) from 24 orbit views, starting from a uniform
+gray texture (Adam, L1 loss; the geometry is fixed). It prints the loss and the PSNR on 6 held-out views, and saves
+test views (ground truth | initialization | trained), the learned texture next to the ground truth, and the loss curve
+to `output/texture_training/`.
+
+A textured mesh is created with texture coordinates and a texture map (`[Ht, Wt, 3]`, values in `[0, 1]`):
+
+```python
+from gmesh.utils.mesh_io import load_textured_mesh
+
+mesh = load_textured_mesh("assets/data/spot/spot_triangulated.obj", "assets/data/spot/spot_texture.png", device="cuda")
+# or: Mesh(verts=verts, faces=faces, uvs=uvs, faces_uv=faces_uv, texture=texture)
+mesh.texture.requires_grad_(True)  # to learn the texture map
+```
+
+
 ## Tests
 
 The tests need a CUDA GPU (the renderer tests also need open3d to read the example mesh). The tests that compare
@@ -227,7 +262,8 @@ python interactive_demo.py
 - Edge antialiasing is a per-axis 1D approximation (exact for straight edges away from corners).
 - No near-plane clipping of triangles.
 - 3D Gaussians are not relightable (fixed SH colors).
-- No mesh texture maps (per-vertex colors only).
+- Texture filtering is isotropic (trilinear mipmapping, no anisotropic filtering), and texture coordinates outside
+  `[0, 1]` are clamped to the border (no wrapping).
 - No lighting in the renderer: mesh shading is baked into the vertex colors and does not follow the camera.
 - No mesh opacity (the mesh is fully opaque).
 - Does not support batch rendering.
@@ -237,7 +273,7 @@ python interactive_demo.py
 - [x] Own differentiable mesh rasterizer and soft hybrid compositing (v1.0).
 - [x] Anti-aliased mesh edges (fractional coverage and silhouette gradients) (v1.0).
 - [x] Skip Gaussians hidden behind fully covered tiles (v1.0).
-- [ ] Support mesh texture map.
+- [x] Support mesh texture map, differentiable (v1.1).
 - [ ] Support batch (batch of camera poses) rendering.
 - [ ] Add two additional mesh to Gaussians conversion methods.
 - [x] Add a toy training example (v1.0).
