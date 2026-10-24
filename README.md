@@ -21,7 +21,8 @@
   the renderer (`GmeshRenderer(..., light=light)`) or per call (`render(..., light=light)`), and is differentiable
   (`PointLight(..., trainable=True)`).
 - `gmesh.utils.mesh_io`: OBJ (with texture coordinates) and texture loading, no extra dependencies.
-- Texture learning example (`examples/train_texture.py`).
+- Textured toy training example (`examples/train_textured_toy.py`, example 5): learn the texture map, and learn 3D
+  Gaussians that mimic the textured mesh, from pre-rendered images of the textured mesh.
 
 ### What's new in v1.0
 - Gmesh's own differentiable, tile-based CUDA mesh rasterizer (PyTorch3D is no longer used), with analytic edge
@@ -47,6 +48,7 @@ Please see ```./examples```:
 2. 3D Gaussian Splatting: [Link](./examples/example-2%20-%20gaussian%20splatting.ipynb)
 3. Hybrid Gaussians and Mesh Rendering via Gmesh: [Link](./examples/example-3%20-%20gmesh%20hybrid%20rendering.ipynb)
 4. Toy Training through the Hybrid Renderer (Gaussians, mesh, and both): [Link](./examples/example-4%20-%20toy%20training.ipynb)
+5. Toy Training from a Textured Mesh (texture map, and Gaussians mimicking the mesh): [Link](./examples/example-5%20-%20textured%20mesh%20training.ipynb)
 
 
 
@@ -191,16 +193,22 @@ It prints the loss and the PSNR on 6 held-out views (and the remaining mesh tran
 (ground truth | initialization | trained) and loss curves to `output/toy_training/`.
 
 
-## Texture Training Example
+## Textured Mesh Training Example
 
 ```bash
-python examples/train_texture.py                      # or: --filter bilinear
+python examples/train_textured_toy.py                          # both experiments (or see example 5, the notebook version)
+python examples/train_textured_toy.py --experiment texture     # or: gaussians; --texture-filter bilinear
 ```
 
-Recovers the texture map of the textured Spot mesh (`assets/data/spot`) from 24 orbit views, starting from a uniform
-gray texture (Adam, L1 loss; the geometry is fixed). It prints the loss and the PSNR on 6 held-out views, and saves
-test views (ground truth | initialization | trained), the learned texture next to the ground truth, and the loss curve
-to `output/texture_training/`.
+The textured Spot mesh (`assets/data/spot`), lit by a point light, is pre-rendered from 24 orbit views. From these
+images, Adam (L1 loss) fits
+
+- `texture`: the texture map, starting from a uniform gray one (the geometry and the light are known);
+- `gaussians`: 3D Gaussians that mimic the mesh, without any mesh (plain 3DGS): means, rotations, scales, opacities and
+  colors, starting from 3 Gaussians per triangle on the surface, with noisy positions, gray.
+
+It prints the loss and the PSNR on 6 held-out views, and saves test views (ground truth | initialization | trained),
+the loss curves and the learned texture next to the ground truth to `output/textured_toy_training/`.
 
 A textured mesh is created with texture coordinates and a texture map (`[Ht, Wt, 3]`, values in `[0, 1]`):
 
