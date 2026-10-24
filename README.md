@@ -16,6 +16,8 @@
   coordinates, as in OBJ files). Texture sampling is differentiable w.r.t. the texture map, so textures can be
   learned, with trilinear mipmapping by default (no aliasing when the texture is minified, and gradients reach all
   the texels a pixel covers).
+- Lighting in the renderer: a `PointLight` shades the mesh per pixel (Phong shading with interpolated vertex normals),
+  for vertex colors and texture maps alike; differentiable w.r.t. the light as well.
 - `gmesh.utils.mesh_io`: OBJ (with texture coordinates) and texture loading, no extra dependencies.
 - Texture learning example (`examples/train_texture.py`).
 
@@ -103,6 +105,8 @@ same pinhole camera and pixel convention as the Gaussians:
      pixel from the screen-space derivatives of its texture coordinates (as on GPUs).
    - `texture_filter="bilinear"`: bilinear sampling of the full-resolution texture (sharper when the texture is
      minified, but it aliases, and only 4 texels per pixel receive gradients).
+   With a `light` (`gmesh.scenes.light.PointLight`), these colors are lit per pixel (Phong shading with interpolated
+   vertex normals, the specular highlight following the camera), with gradients w.r.t. the light's position and colors.
 3. Edges are antialiased analytically (as in nvdiffrast): for every pair of neighboring pixels that sees a geometric
    discontinuity (a silhouette), the position where the front triangle's edge crosses between the two pixel centers
    gives a fractional coverage (and blends colors over a farther surface). This yields smooth silhouettes and
@@ -201,9 +205,15 @@ A textured mesh is created with texture coordinates and a texture map (`[Ht, Wt,
 ```python
 from gmesh.utils.mesh_io import load_textured_mesh
 
-mesh = load_textured_mesh("assets/data/spot/spot_triangulated.obj", "assets/data/spot/spot_texture.png", device="cuda")
+mesh = load_textured_mesh("assets/data/spot/spot_triangulated.obj", "assets/data/spot/spot_texture.png",
+                          device="cuda", trainable=True)  # the texture map is an nn.Parameter
 # or: Mesh(verts=verts, faces=faces, uvs=uvs, faces_uv=faces_uv, texture=texture)
-mesh.texture.requires_grad_(True)  # to learn the texture map
+#     (a texture tensor with requires_grad, or an nn.Parameter, is trainable)
+
+# optional lighting (vertex colors or texture), the light's tensors can be trained too
+from gmesh.scenes.light import PointLight
+light = PointLight(position=(2.0, 2.0, 8.0), specular=(0.2, 0.2, 0.2), device="cuda")
+rgb, depth, alpha = renderer.render(mesh=mesh, gaussians=gaussians, camera_pose=camera_pose, light=light)
 ```
 
 
@@ -264,7 +274,7 @@ python interactive_demo.py
 - 3D Gaussians are not relightable (fixed SH colors).
 - Texture filtering is isotropic (trilinear mipmapping, no anisotropic filtering), and texture coordinates outside
   `[0, 1]` are clamped to the border (no wrapping).
-- No lighting in the renderer: mesh shading is baked into the vertex colors and does not follow the camera.
+- Lighting: a single point light with Phong shading (no shadows, no environment lighting); 3D Gaussians are not lit.
 - No mesh opacity (the mesh is fully opaque).
 - Does not support batch rendering.
 
@@ -274,6 +284,7 @@ python interactive_demo.py
 - [x] Anti-aliased mesh edges (fractional coverage and silhouette gradients) (v1.0).
 - [x] Skip Gaussians hidden behind fully covered tiles (v1.0).
 - [x] Support mesh texture map, differentiable (v1.1).
+- [x] Per-pixel mesh lighting in the renderer (v1.1).
 - [ ] Support batch (batch of camera poses) rendering.
 - [ ] Add two additional mesh to Gaussians conversion methods.
 - [x] Add a toy training example (v1.0).

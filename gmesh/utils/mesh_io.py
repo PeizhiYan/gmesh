@@ -66,9 +66,16 @@ def load_texture(file_path: str, device="cpu") -> torch.Tensor:
     return torch.from_numpy(image).to(device)
 
 
-def load_textured_mesh(obj_path: str, texture_path: str, device="cpu") -> Mesh:
-    """Loads an OBJ file with texture coordinates and its texture map as a textured Mesh."""
+def load_textured_mesh(obj_path: str, texture_path: str, device="cpu", trainable: bool = False) -> Mesh:
+    """
+    Loads an OBJ file with texture coordinates and its texture map as a textured Mesh.
+
+    With `trainable`, the texture map is a torch.nn.Parameter (to optimize it,
+    e.g. torch.optim.Adam([mesh.texture])).
+    """
     verts, faces, uvs, faces_uv = load_obj(obj_path, device=device)
     assert uvs is not None, f"{obj_path} has no texture coordinates"
     texture = load_texture(texture_path, device=device)
+    if trainable:
+        texture = torch.nn.Parameter(texture)
     return Mesh(verts=verts, faces=faces, uvs=uvs, faces_uv=faces_uv, texture=texture)

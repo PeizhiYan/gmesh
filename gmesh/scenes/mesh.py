@@ -30,7 +30,9 @@ class Mesh:
             uvs:       [T, 2]    torch.Tensor    texture coordinates in [0, 1] (OBJ convention: v = 0 at the bottom of the image)
             faces_uv:  [F, 3]    torch.Tensor    indices into uvs per face corner (as the "vt" indices of OBJ faces);
                                                  defaults to faces (one uv per vertex, T = V)
-            texture:   [Ht, Wt, 3] torch.Tensor  RGB texture map (range 0~1.0), row 0 at the top of the image
+            texture:   [Ht, Wt, 3] torch.Tensor  RGB texture map (range 0~1.0), row 0 at the top of the image.
+                                                 Used as given: a tensor with requires_grad (or a torch.nn.Parameter)
+                                                 is trainable, like vertex colors and positions
             allow_check: whether to validate the input tensors. Boolean
 
         Notes:

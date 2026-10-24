@@ -14,7 +14,7 @@ def compute_vertex_normals(verts, faces):
     v0 = verts[faces[:, 0]]
     v1 = verts[faces[:, 1]]
     v2 = verts[faces[:, 2]]
-    face_normals = torch.cross(v1 - v0, v2 - v0)  # [F, 3]
+    face_normals = torch.cross(v1 - v0, v2 - v0, dim=-1)  # [F, 3]
     face_normals = face_normals / (face_normals.norm(dim=-1, keepdim=True) + 1e-8)
     # Accumulate per-vertex normals
     normals = torch.zeros_like(verts)

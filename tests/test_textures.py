@@ -226,3 +226,130 @@ def test_textured_mesh_in_hybrid_renderer():
     rgb.mean().backward()
     assert mesh.texture.grad is not None and mesh.texture.grad.abs().sum().item() > 0
     assert gaussians.means.grad is not None and gaussians.means.grad.abs().sum().item() > 0
+
+
+# ---------------------------------------------------------------------------
+# Lighting (per-pixel Phong shading of vertex colors or textures)
+# ---------------------------------------------------------------------------
+
+def _facing_plane(z=3.0, size=0.5):
+    """a square at depth z facing the camera (normal towards the camera, which is at the origin looking along +z)"""
+    verts = torch.tensor([[-size, -size, z], [size, -size, z], [size, size, z], [-size, size, z]], device=DEVICE)
+    faces = torch.tensor([[0, 2, 1], [0, 3, 2]], device=DEVICE)
+    uvs = torch.tensor([[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]], device=DEVICE)
+    return verts, faces, uvs
+
+
+@pytest.mark.parametrize("source", ["texture", "vertex_colors"])
+def test_lighting_matches_phong(source):
+    """Center pixel of a plane lit from the camera: ambient * c + diffuse * c + specular; lit from behind: ambient * c."""
+    from gmesh.scenes.light import PointLight
+
+    W, H = 49, 41  # the principal point is the center of pixel (24, 20)
+    verts, faces, uvs = _facing_plane()
+    viewmats, Ks = _camera(W, H)
+    c = torch.tensor([0.6, 0.5, 0.4], device=DEVICE)
+    if source == "texture":
+        kw = dict(texture=c.view(1, 1, 3).repeat(8, 8, 1), texcoords=uvs)
+    else:
+        kw = dict(attributes=c.repeat(4, 1))
+    ambient, diffuse, specular = (0.2, 0.25, 0.3), (0.5, 0.4, 0.3), (0.1, 0.05, 0.0)
+    expected = {
+        "front": torch.tensor(ambient, device=DEVICE) * c + torch.tensor(diffuse, device=DEVICE) * c
+                 + torch.tensor(specular, device=DEVICE),
+        "behind": torch.tensor(ambient, device=DEVICE) * c,
+    }
+    for where, position in (("front", (0.0, 0.0, 0.0)), ("behind", (0.0, 0.0, 6.0))):
+        light = PointLight(position=position, ambient=ambient, diffuse=diffuse, specular=specular, shininess=10.0,
+                           device=DEVICE)
+        out = rasterize_mesh(verts, faces, viewmats, Ks, W, H, light=light, **kw)
+        torch.testing.assert_close(out["color"][0, 20, 24], expected[where], atol=1e-4, rtol=1e-4)
+        torch.testing.assert_close(out["attributes"][0, 20, 24], c, atol=1e-5, rtol=1e-5)  # unlit
+
+
+def test_lighting_gradients():
+    """Autograd gradients w.r.t. the light, the texture and the vertex positions match finite differences."""
+    from gmesh.scenes.light import PointLight
+
+    W, H = 40, 32
+    dtype = torch.float64
+    # a curved grid facing the camera (smooth, interpolated vertex normals)
+    n = 3
+    xs = torch.linspace(-1.0, 1.0, n + 1, dtype=dtype, device=DEVICE)
+    gy, gx = torch.meshgrid(xs * 0.8, xs, indexing="ij")
+    verts = torch.stack([gx, gy, 3.0 + 0.3 * gx * gx - 0.2 * gy], dim=-1).reshape(-1, 3)
+    idx = torch.arange((n + 1) * (n + 1), device=DEVICE).view(n + 1, n + 1)
+    a, b, c, d = idx[:-1, :-1].flatten(), idx[:-1, 1:].flatten(), idx[1:, :-1].flatten(), idx[1:, 1:].flatten()
+    faces = torch.cat([torch.stack([a, d, b], -1), torch.stack([a, c, d], -1)])
+    uvs = torch.stack([(gx.flatten() + 1) / 2, 1 - (gy.flatten() / 0.8 + 1) / 2], dim=-1) * 0.8 + 0.1
+    faces_uv = faces
+    viewmats, Ks = _camera(W, H, dtype)
+    g = torch.Generator().manual_seed(5)
+    texture = (torch.rand(5, 6, 3, generator=g, dtype=dtype) * 0.5 + 0.2).to(DEVICE)
+
+    base = rasterize_mesh(verts, faces, viewmats, Ks, W, H, texture=texture, texcoords=uvs, faces_uv=faces_uv)
+    ids = base["face_ids"][0]
+    ids_f = ids.double()[None, None]
+    # pixels whose 3x3 neighborhood is covered by the same face (stable under the finite differences)
+    stable = (torch.nn.functional.max_pool2d(ids_f, 3, 1, 1) == torch.nn.functional.max_pool2d(-ids_f, 3, 1, 1).neg())[0, 0] & (ids >= 0)
+    assert stable.sum().item() > 100
+    weights = torch.rand(1, H, W, 3, generator=g, dtype=dtype).to(DEVICE) * stable[None, ..., None]
+
+    def fn(v, tex, position, ambient, diffuse, specular):
+        light = PointLight(position=position, ambient=ambient, diffuse=diffuse, specular=specular, shininess=4.0,
+                           device=DEVICE)
+        out = rasterize_mesh(v, faces, viewmats, Ks, W, H, texture=tex, texcoords=uvs, faces_uv=faces_uv,
+                             texture_filter="bilinear", light=light)
+        return (out["color"] * weights).sum()
+
+    inputs = [verts, texture,
+              torch.tensor([0.3, -0.2, 0.5], dtype=dtype, device=DEVICE),
+              torch.tensor([0.2, 0.15, 0.1], dtype=dtype, device=DEVICE),
+              torch.tensor([0.4, 0.3, 0.35], dtype=dtype, device=DEVICE),
+              torch.tensor([0.1, 0.2, 0.05], dtype=dtype, device=DEVICE)]
+    inputs = [t.clone().requires_grad_(True) for t in inputs]
+    assert torch.autograd.gradcheck(fn, inputs, eps=1e-6, atol=1e-6, rtol=1e-4)
+
+
+def test_lit_textured_mesh_is_trainable():
+    """A loaded texture (trainable=True) and the light get gradients through the lit render."""
+    from gmesh.renderer.rasterizer_mesh import MeshRenderer
+    from gmesh.scenes.light import PointLight
+    from gmesh.utils.mesh_io import load_textured_mesh
+
+    _, camera, camera_pose = _spot_textured()
+    mesh = load_textured_mesh(SPOT_OBJ, SPOT_TEXTURE, device=DEVICE, trainable=True)
+    assert isinstance(mesh.texture, torch.nn.Parameter)
+    light = PointLight(position=(1.0, 1.0, 5.0), specular=(0.2, 0.2, 0.2), device=DEVICE)
+    for t in (light.position, light.ambient, light.diffuse, light.specular):
+        t.requires_grad_(True)
+
+    renderer = MeshRenderer(camera=camera, bg_color=(1.0, 1.0, 1.0))
+    rgb_lit, _, alpha = renderer.render(mesh, camera_pose, light=light)
+    rgb_unlit, _, _ = renderer.render(mesh, camera_pose)
+    covered = alpha[0, ..., 0] >= 1
+    assert covered.sum().item() > 1000
+    assert (rgb_lit[0][covered] - rgb_unlit[0][covered]).abs().mean().item() > 0.05  # the light changes the image
+    rgb_lit.mean().backward()
+    for name, t in (("texture", mesh.texture), ("position", light.position), ("ambient", light.ambient),
+                    ("diffuse", light.diffuse), ("specular", light.specular)):
+        assert t.grad is not None and torch.isfinite(t.grad).all() and t.grad.abs().sum().item() > 0, name
+
+
+def test_lit_mesh_in_hybrid_renderer():
+    from gmesh.renderer.gmesh_renderer import GmeshRenderer
+    from gmesh.renderer.rasterizer_mesh import MeshRenderer
+    from gmesh.scenes.light import PointLight
+    from gmesh.utils.mesh2gaussians_utils import mesh_to_gaussians
+    from gmesh.scenes.mesh import Mesh
+
+    mesh, camera, camera_pose = _spot_textured()
+    light = PointLight(position=(1.0, 1.0, 5.0), device=DEVICE)
+    gaussians = mesh_to_gaussians(Mesh(verts=mesh.verts.clone(), faces=mesh.faces), method="facet")
+    gaussians.means[:, 2] -= 3.0  # behind the mesh, hidden
+    with torch.no_grad():
+        rgb, _, _ = GmeshRenderer(camera=camera).render(mesh=mesh, gaussians=gaussians, camera_pose=camera_pose,
+                                                        light=light)
+        rgb_m, _, alpha_m = MeshRenderer(camera=camera).render(mesh, camera_pose, light=light)
+    covered = alpha_m[..., 0] >= 1
+    torch.testing.assert_close(rgb[covered], rgb_m[covered])

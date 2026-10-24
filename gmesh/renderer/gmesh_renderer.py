@@ -94,6 +94,7 @@ class GmeshRenderer:
                camera_pose : torch.Tensor,
                return_all : bool = False,
                softness : float = None,
+               light = None,
                ):
         """
         Render the scene that contains both 3D Gaussians and 3D Mesh
@@ -112,6 +113,7 @@ class GmeshRenderer:
                 - for OrbitCamera, [B, 3] (elevation, azimuth, distance).
             return_all (bool): (debug use only) whether or not to also return the mesh and the 3D Gaussians rendered on their own
             softness (float): soft depth test width; defaults to self.softness.
+            light (PointLight): optional, per-pixel Phong shading of the mesh colors (vertex colors or texture).
 
         Returns:
             rgb (torch.Tensor):   [B, H, W, 3]
@@ -126,7 +128,7 @@ class GmeshRenderer:
             softness = self.softness
 
         # render the 3D mesh
-        mesh_raster = self.mesh_renderer.rasterize(mesh=mesh, camera_pose=camera_pose)
+        mesh_raster = self.mesh_renderer.rasterize(mesh=mesh, camera_pose=camera_pose, light=light)
         alpha_m = mesh_raster['alpha']        # [B, H, W, 1] coverage (fractional at silhouettes if antialiased)
         depth_m = mesh_raster['depth']        # [B, H, W, 1]
         color_m = mesh_raster['color']        # [B, H, W, 3] premultiplied by the coverage

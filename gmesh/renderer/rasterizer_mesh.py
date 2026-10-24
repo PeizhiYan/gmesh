@@ -17,6 +17,9 @@ Differentiable triangle-mesh rasterizer.
    For a textured mesh, the texture coordinates are interpolated the same way
    and the texture is sampled at each pixel (see texture.py), with gradients
    w.r.t. the texture map as well.
+4. Optionally, the colors (vertex colors or texture) are lit per pixel by a
+   point light (Phong shading with interpolated vertex normals), with
+   gradients w.r.t. the light as well.
 
 Triangles with a vertex in front of the near plane are skipped (no clipping).
 """
@@ -29,6 +32,8 @@ from torch import Tensor
 
 from gmesh.renderer._backend import load_extension
 from gmesh.renderer.texture import TEXTURE_FILTERS, sample_texture, texture_lod
+from gmesh.renderer.mesh_shader import phong_shading
+from gmesh.utils.graphics_utils import compute_vertex_normals
 from gmesh.scenes.mesh import Mesh
 from gmesh.scenes.cameras import PerspectiveCamera
 
@@ -310,25 +315,27 @@ def rasterize_mesh(
     texcoords: Optional[Tensor] = None,   # [T, 2] texture coordinates in [0, 1] (v = 0 at the bottom)
     faces_uv: Optional[Tensor] = None,    # [F, 3] indices into texcoords per face corner (default: faces)
     texture_filter: str = "mipmap",       # "mipmap" (trilinear) or "bilinear", see texture.py
+    light=None,                           # PointLight (gmesh.scenes.light): per-pixel Phong shading of the colors
 ) -> Dict[str, Tensor]:
     """
     Rasterize a triangle mesh from B cameras.
 
     The color ('attributes' / 'color' outputs) comes either from per-vertex
     `attributes`, or, if a `texture` is given, from the texture sampled at the
-    interpolated texture coordinates.
+    interpolated texture coordinates. With a `light`, the 'color' output is
+    this color lit per pixel (Phong shading, see PointLight).
 
     Returns a dict with:
         face_ids:   [B, H, W]    int32, nearest face per pixel, -1 where empty
         mask:       [B, H, W, 1] float, 1 where a face covers the pixel center
         bary:       [B, H, W, 3] perspective-correct barycentric coordinates (differentiable)
-        attributes: [B, H, W, A] interpolated attributes (or texture color) at the pixel center, 0 where empty
+        attributes: [B, H, W, A] interpolated attributes (or texture color) at the pixel center, 0 where empty (unlit)
         texcoords:  [B, H, W, 2] interpolated texture coordinates, 0 where empty (only with a texture)
         alpha:      [B, H, W, 1] mesh coverage: fractional at silhouettes if antialias, else = mask
         depth:      [B, H, W, 1] camera-space depth of the mesh fragment, 0 where alpha == 0
-        color:      [B, H, W, A] attributes premultiplied by the coverage (antialiased if antialias)
+        color:      [B, H, W, A] attributes (lit, with a light) premultiplied by the coverage (antialiased if antialias)
     All outputs except face_ids and mask are differentiable w.r.t. verts, attributes,
-    texture and texcoords.
+    texture, texcoords and the light.
     """
     assert verts.dim() == 2 and verts.shape[1] == 3, verts.shape
     assert faces.dim() == 2 and faces.shape[1] == 3, faces.shape
@@ -411,6 +418,18 @@ def rasterize_mesh(
         out["attributes"] = color
         out["texcoords"] = scatter(tc_m)
 
+    if light is not None:
+        assert color is not None and color.shape[-1] == 3, "lighting needs RGB vertex colors or an RGB texture"
+        normals = compute_vertex_normals(verts, faces_long)                  # [V, 3]
+        pos_m = (bary_m[..., None] * verts[tri]).sum(dim=1)                  # [M, 3] world space
+        n_m = (bary_m[..., None] * normals[tri]).sum(dim=1)
+        n_m = n_m / (n_m.norm(dim=-1, keepdim=True) + 1e-8)                  # [M, 3]
+        R, t = viewmats[:, :3, :3], viewmats[:, :3, 3]
+        campos = -torch.einsum("bji,bj->bi", R, t)                           # [B, 3] camera centers
+        attr_m = phong_shading(attr_m, pos_m, n_m, campos[cam_idx], light.position,
+                               light.ambient, light.diffuse, light.specular, light.shininess)
+        color = scatter(attr_m)
+
     if antialias:
         premult, alpha, depth_aa = _antialias(
             face_ids, depth, color, uv, verts_cam[..., 2], faces_long, face_adjacency(faces)
@@ -444,11 +463,11 @@ class MeshRenderer:
         self.antialias = antialias      # analytic edge antialiasing (fractional coverage at silhouettes)
         self.texture_filter = texture_filter  # "mipmap" (trilinear) or "bilinear" texture sampling
 
-    def rasterize(self, mesh : Mesh, camera_pose : torch.Tensor) -> Dict[str, Tensor]:
+    def rasterize(self, mesh : Mesh, camera_pose : torch.Tensor, light = None) -> Dict[str, Tensor]:
         """
         Returns the raw rasterization (see `rasterize_mesh`), with the vertex
         colors or the texture as color ('color': [B, H, W, 3] premultiplied by
-        the coverage 'alpha').
+        the coverage 'alpha'), lit per pixel if a `light` (PointLight) is given.
         """
         batch_size = camera_pose.shape[0]
         Ks = self.camera.get_intrinsic_matrix(batch_size=batch_size)  # [B, 3, 3]
@@ -469,9 +488,10 @@ class MeshRenderer:
             texcoords=mesh.uvs if mesh.has_texture else None,
             faces_uv=mesh.faces_uv if mesh.has_texture else None,
             texture_filter=self.texture_filter,
+            light=light,
         )
 
-    def render(self, mesh : Mesh, camera_pose : torch.Tensor):
+    def render(self, mesh : Mesh, camera_pose : torch.Tensor, light = None):
         """
         Render the mesh from multiple camera views.
 
@@ -480,13 +500,14 @@ class MeshRenderer:
             camera_pose (torch.Tensor):
                 - for PerspectiveCamera, [B,6] (yaw, pitch, roll, dx, dy, dz);
                 - for OrbitCamera, [B, 3] (elevation, azimuth, distance).
+            light (PointLight): optional, per-pixel Phong shading of the mesh colors (vertex colors or texture).
 
         Returns:
             rgb (torch.Tensor):   [B, H, W, 3]  composited over the background color
             depth (torch.Tensor): [B, H, W, 1]  camera-space depth, 0 where there is no mesh
             alpha (torch.Tensor): [B, H, W, 1]  mesh coverage (fractional at silhouettes if antialiased)
         """
-        raster = self.rasterize(mesh, camera_pose)
+        raster = self.rasterize(mesh, camera_pose, light=light)
         alpha = raster["alpha"]
         rgb = raster["color"] + (1.0 - alpha) * _bg_tensor(self.bg_color, alpha)
         return rgb, raster["depth"], alpha
