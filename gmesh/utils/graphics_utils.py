@@ -6,7 +6,6 @@
 import torch
 import math
 import numpy as np
-import cv2
 
 
 def compute_vertex_normals(verts, faces):

@@ -1,6 +1,6 @@
 #
 # Peizhi Yan
-# Copyright (C) 2025
+# Copyright (C) 2026
 #
 
 # ## Enviroment Setup
@@ -26,7 +26,7 @@ from gmesh.scenes.mesh import Mesh
 from gmesh.scenes.gaussians import Gaussians
 from gmesh.scenes.cameras import PerspectiveCamera, OrbitCamera
 from gmesh.renderer.gmesh_renderer import GmeshRenderer
-from gmesh.renderer.shader import simple_phone_shading
+from gmesh.renderer.mesh_shader import simple_phone_shading
 
 
 
@@ -43,6 +43,11 @@ FPS_UPDATE_INTERVAL = 0.5
 display_buffer = np.ones((WINDOW_H, WINDOW_W, 3), dtype=np.float32)
 fps_last_time = time.time()
 fps_last_val = 0.0
+
+# "Layers" view: 2x2 grid of the Gaussian layers in front of / behind the mesh
+LAYER_PANELS = ["front (RGB)", "T_front", "back (RGB)", "T_back"]  # row-major
+CANVAS_PADDING = 8  # default DearPyGui window padding (image offset in the canvas window)
+_magma = plt.get_cmap('magma')
 
 
 
@@ -75,6 +80,20 @@ gmesh_renderer = GmeshRenderer(camera=camera, tile_size=16, bg_color=(1.0, 1.0, 
 
 
 
+def _half(img):
+    """[H, W, 3] -> [H/2, W/2, 3], 2x2 box filter"""
+    return 0.25 * (img[0::2, 0::2] + img[1::2, 0::2] + img[0::2, 1::2] + img[1::2, 1::2])
+
+
+def layers_grid(layers):
+    """2x2 grid: front RGB | T_front (top), back RGB | T_back (bottom), at half resolution."""
+    rgb = lambda x: np.clip(x[0, ..., :3].cpu().numpy(), 0.0, 1.0)                   # premultiplied, no background
+    heat = lambda T: _magma(np.clip(T[0, ..., 0].cpu().numpy(), 0.0, 1.0))[..., :3]  # transmittance, 0~1
+    top = np.concatenate([_half(rgb(layers['front'])), _half(heat(layers['T_front']))], axis=1)
+    bottom = np.concatenate([_half(rgb(layers['back'])), _half(heat(layers['T_back']))], axis=1)
+    return np.concatenate([top, bottom], axis=0).astype(np.float32)
+
+
 @torch.no_grad()
 def update_image():
     global display_buffer, fps_last_time, fps_last_val
@@ -89,7 +108,7 @@ def update_image():
     camera_pose = torch.tensor([[elevation, azimuth, distance]], dtype=torch.float32, device=device)
 
     # Get render mode and channel to display
-    render_mode = dpg.get_value("render_mode_selector")  # "Mesh", "3DGS", "GMesh"
+    render_mode = dpg.get_value("render_mode_selector")  # "Mesh", "3DGS", "GMesh", "Layers"
     channel     = dpg.get_value("channel_selector")      # "RGB", "Depth", "Alpha"
 
     # Get Gaussian scale and opacity
@@ -100,9 +119,9 @@ def update_image():
     mesh = Mesh(verts=torch.clone(vertices), faces=faces)
     mesh2 = Mesh(verts=torch.clone(vertices), faces=faces)
     gaussians = mesh_to_gaussians(mesh=mesh2, method='facet3', trainable=False)
-    gaussians.colors[:,:,0] = 1.0
-    gaussians.colors[:,:,1] = 1.0
-    gaussians.colors[:,:,2] = 0.2
+    # Orange Gaussians (colors are SH DC coefficients: rgb = 0.5 + C0 * sh)
+    orange_rgb = torch.tensor([1.0, 0.55, 0.1], dtype=torch.float32, device=device)
+    gaussians.colors[:,0,:] = (orange_rgb - 0.5) / 0.28209479177387814
     gaussians.opacities = opacity * torch.ones([gaussians.num_gaussians], dtype=torch.float32).to(device)
     gaussians.scales = scale * torch.ones([gaussians.num_gaussians, 3], dtype=torch.float32).to(device)
 
@@ -115,10 +134,15 @@ def update_image():
     gaussians.means[:,2] += dpg.get_value("3dgs_offset_z_slider")
 
     # Shading for visualizing mesh 
-    mesh.colors = simple_phone_shading(vertices=vertices, faces=faces)
+    mesh.colors = simple_phone_shading(vertices=vertices, faces=faces,
+                                       ambient_color=torch.tensor([0.05, 0.15, 0.35], device=device),
+                                       diffuse_color=torch.tensor([0.10, 0.35, 0.75], device=device))
 
     # Render
-    ret_dict = gmesh_renderer.render(mesh=mesh, gaussians=gaussians, camera_pose=camera_pose, return_all=True)
+    gmesh_renderer.mesh_renderer.antialias = dpg.get_value("antialias_checkbox")
+    softness = dpg.get_value("softness_slider")
+    ret_dict = gmesh_renderer.render(mesh=mesh, gaussians=gaussians, camera_pose=camera_pose, return_all=True,
+                                     softness=softness)
 
     # Retrieve results
     if render_mode == "Mesh":
@@ -129,7 +153,11 @@ def update_image():
         [rgb, depth, alpha] = ret_dict['blend']
 
     # Prepare image to display
-    if channel == "RGB":
+    for i in range(len(LAYER_PANELS)):
+        dpg.configure_item(f"_layer_label_{i}", show=(render_mode == "Layers"))
+    if render_mode == "Layers":
+        display_np = layers_grid(ret_dict['layers'])  # ignores the display channel
+    elif channel == "RGB":
         rgb_np = rgb.detach().cpu().numpy()[0]
         rgb_np = np.clip(rgb_np, 0.0, 1.0)
         display_np = rgb_np
@@ -189,6 +217,13 @@ with dpg.texture_registry(show=False):
 # Main canvas window
 with dpg.window(label="canvas", tag="_canvas_window", width=WINDOW_W+360, height=WINDOW_H+20, no_title_bar=True, no_move=True, no_bring_to_front_on_focus=True, no_resize=True):
     dpg.add_image("_scene_texture", width=WINDOW_W, height=WINDOW_H, tag="_image")
+    # panel labels of the "Layers" view, drawn over the image
+    for i, name in enumerate(LAYER_PANELS):
+        x = CANVAS_PADDING + (i % 2) * (WINDOW_W // 2) + 6
+        y = CANVAS_PADDING + (i // 2) * (WINDOW_H // 2) + 6
+        with dpg.drawlist(width=110, height=22, pos=(x, y), tag=f"_layer_label_{i}", show=False):
+            dpg.draw_rectangle((0, 0), (110, 22), fill=(0, 0, 0, 160), color=(0, 0, 0, 0))
+            dpg.draw_text((6, 3), name, color=(255, 255, 255, 255), size=15)
 
 # Camera controls
 with dpg.window(label="Camera Controls", width=330, height=180, pos=(WINDOW_W+5, 5)):
@@ -200,14 +235,15 @@ with dpg.window(label="Camera Controls", width=330, height=180, pos=(WINDOW_W+5,
     dpg.add_text("FPS: 0.00", tag="fps_text")
 
 # Content controls
-with dpg.window(label="Content Controls", width=330, height=130, pos=(WINDOW_W+5, 180+10)):
+with dpg.window(label="Content Controls", width=330, height=155, pos=(WINDOW_W+5, 180+10)):
     dpg.add_text("Rendering")
-    dpg.add_combo(["Mesh", "3DGS", "GMesh"], tag="render_mode_selector", default_value="GMesh", callback=lambda: update_image())
+    dpg.add_combo(["Mesh", "3DGS", "GMesh", "Layers"], tag="render_mode_selector", default_value="GMesh", callback=lambda: update_image())
     dpg.add_text("Display Channel")
     dpg.add_combo(["RGB", "Depth", "Alpha"], tag="channel_selector", default_value="RGB", callback=lambda: update_image())
+    dpg.add_checkbox(label="Antialiased mesh edges", tag="antialias_checkbox", default_value=True, callback=lambda: update_image())
 
 # Mesh/Gaussian translation window
-with dpg.window(label="Mesh & 3DGS Transform", width=330, height=240, pos=(WINDOW_W+5, 180+130+15)):
+with dpg.window(label="Mesh & 3DGS Transform", width=330, height=240, pos=(WINDOW_W+5, 180+155+15)):
     dpg.add_text("Translate Mesh:")
     dpg.add_slider_float(tag="mesh_offset_x_slider", label="dx", default_value=0.0, min_value=-2.0, max_value=2.0, callback=update_image)
     dpg.add_slider_float(tag="mesh_offset_y_slider", label="dy", default_value=0.0, min_value=-2.0, max_value=2.0, callback=update_image)
@@ -224,11 +260,13 @@ with dpg.window(label="Mesh & 3DGS Transform", width=330, height=240, pos=(WINDO
                                                            dpg.set_value("3dgs_offset_z_slider", 0.0), update_image()])
 
 # 3DGS Attributes controls
-with dpg.window(label="Gaussian Attributes Controls", width=330, height=180, pos=(WINDOW_W+5, 180+130+240+20)):
+with dpg.window(label="Gaussian Attributes Controls", width=330, height=180, pos=(WINDOW_W+5, 180+155+240+20)):
     dpg.add_slider_float(tag="opacity_slider", label="Opacity", default_value=1.0, min_value=0, max_value=1.0, callback=update_image)
     dpg.add_slider_float(tag="scale_slider", label="Scale", default_value=0.02, min_value=0.001, max_value=0.1, callback=update_image)
+    dpg.add_slider_float(tag="softness_slider", label="Softness", default_value=1.0, min_value=0.05, max_value=3.0, callback=update_image)
     dpg.add_button(label="Reset Gaussians", callback=lambda: [dpg.set_value("opacity_slider", 1.0), 
-                                                              dpg.set_value("scale_slider", 0.02), update_image()])
+                                                              dpg.set_value("scale_slider", 0.02),
+                                                              dpg.set_value("softness_slider", 1.0), update_image()])
 
 
 """

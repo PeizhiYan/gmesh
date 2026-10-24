@@ -2,29 +2,39 @@
     <img src="./assets/GMesh-logo.png" width="500px" />
 </p>
 
-<h1 align="center">Differentiable Hybrid Renderer for 3D Gaussians & Mesh</h1>
+<h1 align="center">A Lightweight and Differentiable Renderer for Joint Mesh and 3D Gaussian Splat Scenes</h1>
 
 
 <a href="https://opensource.org/licenses/MIT">
 <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT">
 </a>
 
-**Current Version**: v0.1 (July 02, 2025)
+**Current Version**: v1.0 (October 23, 2026)
+
+### What's new in v1.0
+- Gmesh's own differentiable, tile-based CUDA mesh rasterizer (PyTorch3D is no longer used), with analytic edge
+  antialiasing and gradients at silhouettes.
+- True hybrid compositing: every Gaussian is depth-tested against the mesh surface at every pixel, with a soft
+  split that follows the surface (no more blending of two separately rendered images).
+- Differentiable w.r.t. both the Gaussians and the mesh (vertex positions and colors).
+- Gaussians hidden behind the mesh are culled per tile before compositing.
 
 ## TL;DR
 
 - Combining Gaussians and meshes lets you leverage the strengths of both for more flexible and realistic 3D scene rendering.
 - Gmesh supports differentiable rendering of mixed 3D Gaussians and meshes within a single scene.
-- Built on gsplat and PyTorch3D, Gmesh is fully PyTorch-native.
+- Gmesh is fully PyTorch-native and self-contained: one CUDA extension with its own differentiable mesh rasterizer,
+  hybrid compositing, and 3DGS projection kernels adapted from [gsplat](https://github.com/nerfstudio-project/gsplat).
 
 
 ## Examples
 
 Please see ```./examples```:
 
-1. 3D Mesh Rendering via Pytorch3D: [Link](./examples/example-1%20-%20mesh%20rendering.ipynb)
-2. 3DGS via gsplat: [Link](./examples/example-2%20-%20gaussian%20splatting.ipynb)
+1. 3D Mesh Rendering: [Link](./examples/example-1%20-%20mesh%20rendering.ipynb)
+2. 3D Gaussian Splatting: [Link](./examples/example-2%20-%20gaussian%20splatting.ipynb)
 3. Hybrid Gaussians and Mesh Rendering via Gmesh: [Link](./examples/example-3%20-%20gmesh%20hybrid%20rendering.ipynb)
+4. Toy Training through the Hybrid Renderer (Gaussians, mesh, and both): [Link](./examples/example-4%20-%20toy%20training.ipynb)
 
 
 
@@ -40,31 +50,98 @@ conda activate gmesh
 conda install -c "nvidia/label/cuda-11.7.1" cuda-toolkit ninja
 conda install -c conda-forge cudatoolkit=11.7 cudatoolkit-dev=11.7
 
+# install gcc 11 (nvcc 11.7 needs gcc 11)
+conda install -c conda-forge gcc=11 gxx=11
+
 # install PyTorch
 pip install torch==2.0.1 torchvision --index-url https://download.pytorch.org/whl/cu117
 
 # install other dependencies
-pip install -r requirements.txt
+pip install --no-build-isolation -r requirements.txt
 
 # install Gmesh
-pip install -e .
+pip install --no-build-isolation -e .
 ```
 
 > [!TIP]
 > I have only tested the following library versions:
-> ```CUDA 11.7```, ```PyTorch 2.0.1```, ```PyTorch3D V0.7.8```, and ```gsplat v1.5.2```.
+> ```CUDA 11.7``` and ```PyTorch 2.0.1```. gsplat is not needed (only optionally, to run the tests that
+> compare Gmesh's ported kernels with it).
+> The CUDA extension of Gmesh is JIT-compiled the first time it is used (this needs `nvcc` and `ninja`,
+> installed above, and takes about a minute). It is built with the `nvcc` that PyTorch finds through `CUDA_HOME`
+> (or `CUDA_PATH`, which a system-wide CUDA install sets on Windows); set `CUDA_HOME` to choose the toolkit.
+> Any NVIDIA GPU with compute capability 6.0 or higher works (GTX 10xx and newer).
 > If you encounter any issues or unexpected results, please double-check that you have installed the correct versions.
 
 
 ## Design Details
 
 <p align="center">
-    <b>Pipeline</b><br>
-    <img src="./assets/pipeline.png" width="100%" />
+    <img src="./assets/pipeline-v1.0.png" width="888" />
 </p>
 
-> [!WARNING]
-> Using depth maps for blending can only approximate the rendering; without a z-buffer, accurate blending is not possible.
+### Mesh rasterizer
+
+Meshes are rasterized by Gmesh's own differentiable rasterizer (`gmesh/renderer/rasterizer_mesh.py`), using exactly the
+same pinhole camera and pixel convention as the Gaussians:
+
+1. Triangles are binned into 16x16 tiles, and a CUDA kernel finds the nearest triangle at each pixel center (z-buffer).
+   This visibility decision is the only non-differentiable step.
+2. Barycentric coordinates, depth and vertex attributes (colors) are recomputed in PyTorch from the face ids, with
+   perspective-correct interpolation, so autograd provides gradients w.r.t. vertex positions and vertex colors.
+
+3. Edges are antialiased analytically (as in nvdiffrast): for every pair of neighboring pixels that sees a geometric
+   discontinuity (a silhouette), the position where the front triangle's edge crosses between the two pixel centers
+   gives a fractional coverage (and blends colors over a farther surface). This yields smooth silhouettes and
+   gradients w.r.t. the silhouette vertex positions. Internal edges of a connected surface are left untouched.
+
+Triangles with a vertex in front of the near plane are skipped (no near-plane clipping).
+
+### Hybrid rendering
+
+At every pixel, each Gaussian is split at the mesh surface into the part in front of it and the part behind it.
+The Gaussian's depth at pixel `p` uses the same local affine (EWA) approximation as its 2D splat: the camera-space
+depth conditioned on the projected position is Gaussian with mean `z*(p) = z_c + g . (p - mean2d)` and standard
+deviation `sigma`, where `g = (Sigma_uv + eps I)^-1 Sigma_uv,z` and `sigma^2 = Sigma_zz - Sigma_z,uv g` come from the
+projected 3D covariance (so a flat Gaussian lying on a tilted surface has a depth that tilts with it). The fraction
+in front of the mesh depth `D` is
+
+```
+f = Phi((D - z*(p)) / (sigma * softness))
+```
+
+<p align="left">
+    <img src="./assets/two_layer_gaussian_mesh_blending.png" width="650px" />
+</p>
+
+
+The front parts (`alpha * f`) and back parts (`alpha * (1 - f)`) are alpha-composited into two layers, in the usual
+sorted 3DGS order, and combined with the opaque mesh (coverage `a_m`, color `c_m`):
+
+```
+C = C_front + T_front * (a_m * c_m + (1 - a_m) * (C_back + T_back * bg))
+```
+
+- A Gaussian crossing the mesh is cut smoothly and *along the surface* (a flat Gaussian lying on a tilted surface
+  tilts with it), instead of a per-pixel staircase, also for Gaussians lying on the surface.
+- Everything is differentiable: Gaussian means, rotations, scales (also through the split), opacities and colors,
+  and the mesh vertices (through the mesh depth and the interpolated colors).
+- `softness` scales the width of the transition (1.0 = the Gaussian's own depth extent; smaller is sharper).
+- With antialiased mesh edges, the coverage `a_m` is fractional at silhouettes, so Gaussians behind the mesh fade
+  out smoothly at its outline instead of being cut along it.
+- `cull_occluded=True` removes Gaussians that are certainly hidden behind the mesh in fully covered 16x16 tiles
+  before compositing. This does not change the result (they would be skipped anyway) and saves time in scenes
+  where the mesh hides many Gaussians.
+
+The compositing is a custom CUDA kernel (forward and backward, `gmesh/renderer/csrc/rasterize_hybrid.cu`); the
+projection, spherical harmonics and tile sorting kernels are adapted from gsplat v1.5.2 (`gmesh/renderer/csrc/gsplat`,
+see the Acknowledgement), and the depth model is computed in PyTorch.
+
+```python
+gmesh_renderer = GmeshRenderer(camera=camera, tile_size=16, bg_color=(1.0, 1.0, 1.0), softness=1.0,
+                               antialias=True, cull_occluded=True)
+rgb, depth, alpha = gmesh_renderer.render(mesh=mesh, gaussians=gaussians, camera_pose=camera_pose)
+```
 
 <p align="center">
     <b>Camera Coordinates</b><br>
@@ -73,6 +150,54 @@ pip install -e .
 
 
 
+
+
+## Toy Training Example
+
+```bash
+python examples/train_toy.py                          # all three experiments (or see example 4, the notebook version)
+python examples/train_toy.py --experiment gaussians   # or: mesh, joint
+```
+
+A sanity check that the hybrid renderer trains: the ground truth is the example mesh plus two rings of colorful
+Gaussians passing *through* it (in front of it, behind it and crossing its surface), rendered from 24 orbit views.
+From perturbed parameters, Adam (L1 loss) fits
+
+- `gaussians`: the Gaussians (means, rotations, scales, opacities, colors), with the fixed mesh occluding them;
+- `mesh`: a translation of the mesh and its vertex colors, with the Gaussians fixed (gradients through the
+  silhouettes, the mesh depth vs. the Gaussians, and the color interpolation);
+- `joint`: both at once.
+
+It prints the loss and the PSNR on 6 held-out views (and the remaining mesh translation error), and saves test views
+(ground truth | initialization | trained) and loss curves to `output/toy_training/`.
+
+
+## Tests
+
+The tests need a CUDA GPU (the renderer tests also need open3d to read the example mesh). The tests that compare
+Gmesh's ported kernels with gsplat itself need gsplat v1.5.2 and are skipped without it:
+
+```bash
+pip install git+https://github.com/nerfstudio-project/gsplat.git@v1.5.2   # optional, for the comparisons
+python -m pytest tests -v
+```
+
+They check the ported projection, tile intersection, spherical harmonics and plain 3DGS rendering against gsplat
+(forward and gradients); the hybrid compositing against gsplat (no mesh) and against a brute-force PyTorch reference
+(with a mesh), for both the forward pass and the gradients; that occlusion culling does not change the result; the
+mesh rasterizer against a brute-force rasterizer, supersampling (antialiasing) and finite-difference gradients; and
+that the mesh is pixel- and depth-aligned with the Gaussians.
+
+
+## Benchmark
+
+```bash
+python benchmarks/benchmark_renderer.py --width 1024 --height 768 --extra-gaussians 200000 --backward
+```
+
+Times (per frame, forward and forward + backward) the Gmesh mesh rasterizer, plain 3DGS, the hybrid renderer
+(with and without antialiasing / occlusion culling), and, for reference, the mesh and the Gaussians rendered
+separately (without occlusion between them).
 
 
 ## Demo
@@ -84,11 +209,11 @@ python interactive_demo.py
 ```
 
 <p align="center">
-    <a href="https://www.youtube.com/watch?v=iVwSZtwr9GI">
-        <img src="https://img.youtube.com/vi/iVwSZtwr9GI/0.jpg" alt="GMesh Demo Video" width="300px" height="auto"/>
+    <a href="https://youtu.be/LhAtS1K2f9s?si=XhwSXLdoVl6Wql-9">
+        <img src="https://img.youtube.com/vi/LhAtS1K2f9s/0.jpg" alt="GMesh Demo Video" width="500px" height="auto"/>
     </a>
     <br>
-    <a href="https://www.youtube.com/watch?v=iVwSZtwr9GI">Watch the demo video on YouTube</a>
+    <a href="https://youtu.be/LhAtS1K2f9s?si=XhwSXLdoVl6Wql-9">Watch the demo video on YouTube</a>
 </p>
 
 
@@ -97,23 +222,37 @@ python interactive_demo.py
 ## Limitations and Todos
 
 ### The current version has the following main limitations:
-- The depth map of 3DGS may not reflect the nearest depth.
-- The rendered color of overlapping Gaussians may still be visible in the final image, even when those Gaussians are occluded by a mesh.
-- 3D Gaussians' are not relightable.
-- Does not support mesh opacity.
-- Does not support mesh texture map.
+- Gaussians are still sorted by their center depth (as in 3DGS); only the split against the mesh is per pixel.
+- One opaque mesh layer (no transparent meshes).
+- Edge antialiasing is a per-axis 1D approximation (exact for straight edges away from corners).
+- No near-plane clipping of triangles.
+- 3D Gaussians are not relightable (fixed SH colors).
+- No mesh texture maps (per-vertex colors only).
+- No lighting in the renderer: mesh shading is baked into the vertex colors and does not follow the camera.
+- No mesh opacity (the mesh is fully opaque).
 - Does not support batch rendering.
 
 ### Todos:
-- [ ] Support z-buffering.
+- [x] Per-pixel depth test between Gaussians and the mesh (v1.0).
+- [x] Own differentiable mesh rasterizer and soft hybrid compositing (v1.0).
+- [x] Anti-aliased mesh edges (fractional coverage and silhouette gradients) (v1.0).
+- [x] Skip Gaussians hidden behind fully covered tiles (v1.0).
 - [ ] Support mesh texture map.
 - [ ] Support batch (batch of camera poses) rendering.
 - [ ] Add two additional mesh to Gaussians conversion methods.
-- [ ] Add some training examples.
+- [x] Add a toy training example (v1.0).
+- [ ] Add more training examples (e.g. real multi-view data, densification).
 
 
 
 ## Acknowledgement and Disclaimer
+
+Gmesh's 3D Gaussian projection, tile intersection and spherical harmonics kernels, and parts of its hybrid compositing
+kernels, are adapted from [gsplat](https://github.com/nerfstudio-project/gsplat) v1.5.2 (Copyright the gsplat authors,
+Apache License 2.0); see [gmesh/renderer/csrc/gsplat/README.md](./gmesh/renderer/csrc/gsplat/README.md) for the list of
+files and changes, and [its license](./gmesh/renderer/csrc/gsplat/LICENSE). These kernels use
+[GLM](https://github.com/g-truc/glm) (MIT License), included in `gmesh/renderer/csrc/third_party/glm`. If you use Gmesh,
+please also cite gsplat.
 
 The code can be used for research purposes, **provided that the terms of the licenses of any third-party libraries, data or dependencies are followed**. For commercial use, the parts of code we wrote are for free, but please be aware to get permissions from any third-party to use their code or dependencies. We do not assume any responsibility for any issues, damages, or liabilities that may arise from the use of this code. Users are responsible for ensuring compliance with any legal requirements, including licensing terms and conditions, and for verifying that the code is suitable for their intended purposes.
 
@@ -132,7 +271,7 @@ Please cite this work if you find it useful in your projects.
     month = jul,
     title = {{GMesh: Differentiable Hybrid Renderer for 3D Gaussians and Meshes}},
     url = {https://github.com/PeizhiYan/gmesh},
-    version = {0.1},
+    version = {1.0},
     year = {2025}
 }
 ```
