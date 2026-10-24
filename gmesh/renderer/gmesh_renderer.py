@@ -107,7 +107,7 @@ class GmeshRenderer:
             camera_pose (torch.Tensor):
                 - for PerspectiveCamera, [B,6] (yaw, pitch, roll, dx, dy, dz);
                 - for OrbitCamera, [B, 3] (elevation, azimuth, distance).
-            return_all (bool): whether or not to also return the mesh and the 3D Gaussians rendered on their own
+            return_all (bool): (debug use only) whether or not to also return the mesh and the 3D Gaussians rendered on their own
             softness (float): soft depth test width; defaults to self.softness.
 
         Returns:
@@ -146,6 +146,7 @@ class GmeshRenderer:
             ret_dict = {
                 'mesh':  [rgb_m, depth_m, alpha_m],
                 '3dgs':  [rgb_g, depth_g, alpha_g],
+                'layers': layers,
                 'blend': [rgb, depth, alpha],
             }
             return ret_dict

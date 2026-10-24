@@ -44,6 +44,11 @@ display_buffer = np.ones((WINDOW_H, WINDOW_W, 3), dtype=np.float32)
 fps_last_time = time.time()
 fps_last_val = 0.0
 
+# "Layers" view: 2x2 grid of the Gaussian layers in front of / behind the mesh
+LAYER_PANELS = ["front (RGB)", "T_front", "back (RGB)", "T_back"]  # row-major
+CANVAS_PADDING = 8  # default DearPyGui window padding (image offset in the canvas window)
+_magma = plt.get_cmap('magma')
+
 
 
 
@@ -75,6 +80,20 @@ gmesh_renderer = GmeshRenderer(camera=camera, tile_size=16, bg_color=(1.0, 1.0, 
 
 
 
+def _half(img):
+    """[H, W, 3] -> [H/2, W/2, 3], 2x2 box filter"""
+    return 0.25 * (img[0::2, 0::2] + img[1::2, 0::2] + img[0::2, 1::2] + img[1::2, 1::2])
+
+
+def layers_grid(layers):
+    """2x2 grid: front RGB | T_front (top), back RGB | T_back (bottom), at half resolution."""
+    rgb = lambda x: np.clip(x[0, ..., :3].cpu().numpy(), 0.0, 1.0)                   # premultiplied, no background
+    heat = lambda T: _magma(np.clip(T[0, ..., 0].cpu().numpy(), 0.0, 1.0))[..., :3]  # transmittance, 0~1
+    top = np.concatenate([_half(rgb(layers['front'])), _half(heat(layers['T_front']))], axis=1)
+    bottom = np.concatenate([_half(rgb(layers['back'])), _half(heat(layers['T_back']))], axis=1)
+    return np.concatenate([top, bottom], axis=0).astype(np.float32)
+
+
 @torch.no_grad()
 def update_image():
     global display_buffer, fps_last_time, fps_last_val
@@ -89,7 +108,7 @@ def update_image():
     camera_pose = torch.tensor([[elevation, azimuth, distance]], dtype=torch.float32, device=device)
 
     # Get render mode and channel to display
-    render_mode = dpg.get_value("render_mode_selector")  # "Mesh", "3DGS", "GMesh"
+    render_mode = dpg.get_value("render_mode_selector")  # "Mesh", "3DGS", "GMesh", "Layers"
     channel     = dpg.get_value("channel_selector")      # "RGB", "Depth", "Alpha"
 
     # Get Gaussian scale and opacity
@@ -134,7 +153,11 @@ def update_image():
         [rgb, depth, alpha] = ret_dict['blend']
 
     # Prepare image to display
-    if channel == "RGB":
+    for i in range(len(LAYER_PANELS)):
+        dpg.configure_item(f"_layer_label_{i}", show=(render_mode == "Layers"))
+    if render_mode == "Layers":
+        display_np = layers_grid(ret_dict['layers'])  # ignores the display channel
+    elif channel == "RGB":
         rgb_np = rgb.detach().cpu().numpy()[0]
         rgb_np = np.clip(rgb_np, 0.0, 1.0)
         display_np = rgb_np
@@ -194,6 +217,13 @@ with dpg.texture_registry(show=False):
 # Main canvas window
 with dpg.window(label="canvas", tag="_canvas_window", width=WINDOW_W+360, height=WINDOW_H+20, no_title_bar=True, no_move=True, no_bring_to_front_on_focus=True, no_resize=True):
     dpg.add_image("_scene_texture", width=WINDOW_W, height=WINDOW_H, tag="_image")
+    # panel labels of the "Layers" view, drawn over the image
+    for i, name in enumerate(LAYER_PANELS):
+        x = CANVAS_PADDING + (i % 2) * (WINDOW_W // 2) + 6
+        y = CANVAS_PADDING + (i // 2) * (WINDOW_H // 2) + 6
+        with dpg.drawlist(width=110, height=22, pos=(x, y), tag=f"_layer_label_{i}", show=False):
+            dpg.draw_rectangle((0, 0), (110, 22), fill=(0, 0, 0, 160), color=(0, 0, 0, 0))
+            dpg.draw_text((6, 3), name, color=(255, 255, 255, 255), size=15)
 
 # Camera controls
 with dpg.window(label="Camera Controls", width=330, height=180, pos=(WINDOW_W+5, 5)):
@@ -207,7 +237,7 @@ with dpg.window(label="Camera Controls", width=330, height=180, pos=(WINDOW_W+5,
 # Content controls
 with dpg.window(label="Content Controls", width=330, height=155, pos=(WINDOW_W+5, 180+10)):
     dpg.add_text("Rendering")
-    dpg.add_combo(["Mesh", "3DGS", "GMesh"], tag="render_mode_selector", default_value="GMesh", callback=lambda: update_image())
+    dpg.add_combo(["Mesh", "3DGS", "GMesh", "Layers"], tag="render_mode_selector", default_value="GMesh", callback=lambda: update_image())
     dpg.add_text("Display Channel")
     dpg.add_combo(["RGB", "Depth", "Alpha"], tag="channel_selector", default_value="RGB", callback=lambda: update_image())
     dpg.add_checkbox(label="Antialiased mesh edges", tag="antialias_checkbox", default_value=True, callback=lambda: update_image())

@@ -2,14 +2,14 @@
     <img src="./assets/GMesh-logo.png" width="500px" />
 </p>
 
-<h1 align="center">Differentiable Hybrid Renderer for 3D Gaussians & Mesh</h1>
+<h1 align="center">A Lightweight and Differentiable Renderer for Joint Mesh and 3D Gaussian Splat Scenes</h1>
 
 
 <a href="https://opensource.org/licenses/MIT">
 <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT">
 </a>
 
-**Current Version**: v1.0 (October 15, 2026)
+**Current Version**: v1.0 (October 23, 2026)
 
 ### What's new in v1.0
 - Gmesh's own differentiable, tile-based CUDA mesh rasterizer (PyTorch3D is no longer used), with analytic edge
@@ -49,6 +49,9 @@ conda activate gmesh
 # install cuda toolkit
 conda install -c "nvidia/label/cuda-11.7.1" cuda-toolkit ninja
 conda install -c conda-forge cudatoolkit=11.7 cudatoolkit-dev=11.7
+
+# install gcc 11 (nvcc 11.7 needs gcc 11)
+conda install -c conda-forge gcc=11 gxx=11
 
 # install PyTorch
 pip install torch==2.0.1 torchvision --index-url https://download.pytorch.org/whl/cu117
