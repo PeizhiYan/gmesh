@@ -37,7 +37,7 @@ from gmesh.scenes.cameras import PerspectiveCamera
 from gmesh.renderer.gmesh_renderer import GmeshRenderer
 from gmesh.renderer.rasterizer_mesh import MeshRenderer
 from gmesh.renderer.rasterizer_gaussians import GaussianRasterizer
-from gmesh.renderer.mesh_shader import simple_phone_shading
+from gmesh.scenes.light import PointLight
 from gmesh.utils.mesh2gaussians_utils import mesh_to_gaussians
 
 
@@ -76,7 +76,7 @@ def build_scene(args, device):
 
 def make_inputs(vertices, faces, gaussian_params, requires_grad):
     mesh = Mesh(verts=vertices.clone().requires_grad_(requires_grad), faces=faces)
-    mesh.colors = simple_phone_shading(vertices=vertices, faces=faces).detach().requires_grad_(requires_grad)
+    mesh.colors = torch.ones_like(vertices).requires_grad_(requires_grad)  # base color, lit by the renderers' light
     params = [p.clone().requires_grad_(requires_grad) for p in gaussian_params]
     gaussians = Gaussians(*params)
     leaves = [mesh.verts, mesh.colors] + params
@@ -115,13 +115,14 @@ def main():
                                fov_y=40.0 * args.height / args.width, z_near=0.1, z_far=100, device=device)
     camera_pose = torch.tensor([[0.0, 0.0, 0.0, 0.0, 0.0, 7.0]], device=device)
     bg = (1.0, 1.0, 1.0)
+    light = PointLight(position=(0.0, 0.0, 10.0), device=device)  # per-pixel shading of the mesh
 
-    mesh_aa = MeshRenderer(camera=camera, bg_color=bg, antialias=True)
-    mesh_no_aa = MeshRenderer(camera=camera, bg_color=bg, antialias=False)
+    mesh_aa = MeshRenderer(camera=camera, bg_color=bg, antialias=True, light=light)
+    mesh_no_aa = MeshRenderer(camera=camera, bg_color=bg, antialias=False, light=light)
     gaussian_rasterizer = GaussianRasterizer(camera=camera, bg_color=bg)
-    hybrid = GmeshRenderer(camera=camera, bg_color=bg, antialias=True, cull_occluded=True)
-    hybrid_no_cull = GmeshRenderer(camera=camera, bg_color=bg, antialias=True, cull_occluded=False)
-    hybrid_no_aa = GmeshRenderer(camera=camera, bg_color=bg, antialias=False, cull_occluded=True)
+    hybrid = GmeshRenderer(camera=camera, bg_color=bg, antialias=True, cull_occluded=True, light=light)
+    hybrid_no_cull = GmeshRenderer(camera=camera, bg_color=bg, antialias=True, cull_occluded=False, light=light)
+    hybrid_no_aa = GmeshRenderer(camera=camera, bg_color=bg, antialias=False, cull_occluded=True, light=light)
 
     def separate(mesh, gaussians):
         # mesh and Gaussians rendered on their own, without any occlusion between them

@@ -58,7 +58,8 @@ class GmeshRenderer:
                  softness = 1.0,
                  antialias = True, 
                  cull_occluded = True,
-                 texture_filter = "mipmap"):
+                 texture_filter = "mipmap",
+                 light = None):
         """
         Differentiable hybrid renderer for 3D Gaussians and triangle meshes.
 
@@ -74,6 +75,8 @@ class GmeshRenderer:
                 by the mesh (does not change the result, saves time).
             texture_filter (str): texture sampling of textured meshes, "mipmap" (trilinear,
                 no aliasing when minified) or "bilinear".
+            light (PointLight): default light of the mesh (per-pixel Phong shading of its vertex
+                colors or texture), overridden by the light given to render(); None: unlit.
         """
         self.camera = camera
         self.image_height = camera.image_height
@@ -84,6 +87,7 @@ class GmeshRenderer:
         self.bg_color = bg_color            # background color
         self.softness = softness            # width of the soft depth test, relative to the Gaussians' extent
         self.cull_occluded = cull_occluded  # skip Gaussians certainly hidden behind fully covered tiles
+        self.light = light                  # default light of the mesh (None: unlit)
         self.mesh_renderer = MeshRenderer(camera=camera, tile_size=tile_size, bg_color=bg_color,
                                           antialias=antialias, texture_filter=texture_filter) # setup mesh renderer (antialiased mesh edges)
         self.gaussian_rasterizer = GaussianRasterizer(camera=camera, tile_size=tile_size, bg_color=bg_color) # setup 3DGS rasterizer
@@ -113,7 +117,8 @@ class GmeshRenderer:
                 - for OrbitCamera, [B, 3] (elevation, azimuth, distance).
             return_all (bool): (debug use only) whether or not to also return the mesh and the 3D Gaussians rendered on their own
             softness (float): soft depth test width; defaults to self.softness.
-            light (PointLight): optional, per-pixel Phong shading of the mesh colors (vertex colors or texture).
+            light (PointLight): per-pixel Phong shading of the mesh colors (vertex colors or texture);
+                default: self.light (None: unlit).
 
         Returns:
             rgb (torch.Tensor):   [B, H, W, 3]
@@ -128,6 +133,8 @@ class GmeshRenderer:
             softness = self.softness
 
         # render the 3D mesh
+        if light is None:
+            light = self.light
         mesh_raster = self.mesh_renderer.rasterize(mesh=mesh, camera_pose=camera_pose, light=light)
         alpha_m = mesh_raster['alpha']        # [B, H, W, 1] coverage (fractional at silhouettes if antialiased)
         depth_m = mesh_raster['depth']        # [B, H, W, 1]

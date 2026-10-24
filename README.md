@@ -16,8 +16,10 @@
   coordinates, as in OBJ files). Texture sampling is differentiable w.r.t. the texture map, so textures can be
   learned, with trilinear mipmapping by default (no aliasing when the texture is minified, and gradients reach all
   the texels a pixel covers).
-- Lighting in the renderer: a `PointLight` shades the mesh per pixel (Phong shading with interpolated vertex normals),
-  for vertex colors and texture maps alike; differentiable w.r.t. the light as well.
+- Lighting in the renderer: a `PointLight` shades the mesh per pixel (Phong shading with interpolated vertex normals).
+  Vertex colors and texture maps are both the base color of the surface and are lit the same way; the light is set on
+  the renderer (`GmeshRenderer(..., light=light)`) or per call (`render(..., light=light)`), and is differentiable
+  (`PointLight(..., trainable=True)`).
 - `gmesh.utils.mesh_io`: OBJ (with texture coordinates) and texture loading, no extra dependencies.
 - Texture learning example (`examples/train_texture.py`).
 
@@ -210,10 +212,11 @@ mesh = load_textured_mesh("assets/data/spot/spot_triangulated.obj", "assets/data
 # or: Mesh(verts=verts, faces=faces, uvs=uvs, faces_uv=faces_uv, texture=texture)
 #     (a texture tensor with requires_grad, or an nn.Parameter, is trainable)
 
-# optional lighting (vertex colors or texture), the light's tensors can be trained too
+# lighting, the same for vertex colors and textures (both are the base color of the surface)
 from gmesh.scenes.light import PointLight
-light = PointLight(position=(2.0, 2.0, 8.0), specular=(0.2, 0.2, 0.2), device="cuda")
-rgb, depth, alpha = renderer.render(mesh=mesh, gaussians=gaussians, camera_pose=camera_pose, light=light)
+light = PointLight(position=(2.0, 2.0, 8.0), specular=(0.2, 0.2, 0.2), device="cuda")  # trainable=True to learn it
+renderer = GmeshRenderer(camera=camera, light=light)        # default light of the renderer (None: unlit)
+rgb, depth, alpha = renderer.render(mesh=mesh, gaussians=gaussians, camera_pose=camera_pose)  # or render(..., light=...)
 ```
 
 

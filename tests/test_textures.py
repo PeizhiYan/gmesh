@@ -353,3 +353,20 @@ def test_lit_mesh_in_hybrid_renderer():
         rgb_m, _, alpha_m = MeshRenderer(camera=camera).render(mesh, camera_pose, light=light)
     covered = alpha_m[..., 0] >= 1
     torch.testing.assert_close(rgb[covered], rgb_m[covered])
+
+
+def test_renderer_default_light():
+    """A light given to the renderer is used by default, and is the same as giving it to render()."""
+    from gmesh.renderer.rasterizer_mesh import MeshRenderer
+    from gmesh.scenes.light import PointLight
+
+    mesh, camera, camera_pose = _spot_textured()
+    light = PointLight(position=(1.0, 1.0, 5.0), specular=(0.2, 0.2, 0.2), device=DEVICE)
+    with torch.no_grad():
+        per_call, _, _ = MeshRenderer(camera=camera).render(mesh, camera_pose, light=light)
+        default, _, _ = MeshRenderer(camera=camera, light=light).render(mesh, camera_pose)
+        unlit, _, _ = MeshRenderer(camera=camera).render(mesh, camera_pose)
+    torch.testing.assert_close(default, per_call)
+    assert (default - unlit).abs().amax().item() > 0.1
+    trainable = PointLight(device=DEVICE, trainable=True)
+    assert all(isinstance(t, torch.nn.Parameter) for t in trainable.parameters())

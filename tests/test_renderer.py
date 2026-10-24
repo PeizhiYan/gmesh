@@ -249,11 +249,11 @@ def test_mesh_is_pixel_aligned_with_gaussians(width, height):
 def _spot_scene(W=256, H=128):
     from gmesh.scenes.mesh import Mesh
     from gmesh.scenes.cameras import PerspectiveCamera
-    from gmesh.renderer.mesh_shader import simple_phone_shading
 
     vertices, faces = load_spot()
-    mesh = Mesh(verts=vertices, faces=faces)
-    mesh.colors = simple_phone_shading(vertices=vertices, faces=faces)
+    # colors varying over the surface (unlit)
+    lo, hi = vertices.amin(dim=0), vertices.amax(dim=0)
+    mesh = Mesh(verts=vertices, faces=faces, colors=0.1 + 0.8 * (vertices - lo) / (hi - lo))
     camera = PerspectiveCamera(image_width=W, image_height=H, fov_x=40, fov_y=40 * H / W,
                                z_near=0.1, z_far=100, device=DEVICE)
     camera_pose = torch.tensor([[0.0, 0.0, 0.0, 0.0, 0.0, 7.0]], device=DEVICE)

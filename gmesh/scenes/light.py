@@ -14,6 +14,7 @@ class PointLight:
                  specular = (0.0, 0.0, 0.0),
                  shininess = 30.0,
                  device = "cuda",
+                 trainable = False,
                  ):
         """
         A point light for Phong shading of meshes (one light), evaluated per pixel by
@@ -34,12 +35,18 @@ class PointLight:
             specular:  [3]  specular color (0~1.0)
             shininess: float, specular exponent
             device:    device of the tensors created from tuples / numbers
+            trainable: make all the light's tensors torch.nn.Parameters (e.g. for
+                       torch.optim.Adam(light.parameters()))
         """
+        # the color of a surface point is its base color (vertex color or texture) lit by this light
         self.position = _to_tensor(position, device)
         self.ambient = _to_tensor(ambient, device)
         self.diffuse = _to_tensor(diffuse, device)
         self.specular = _to_tensor(specular, device)
         self.shininess = _to_tensor(shininess, device)
+        if trainable:
+            self.position, self.ambient, self.diffuse, self.specular, self.shininess = [
+                torch.nn.Parameter(t.detach().clone()) for t in self.parameters()]
 
     def parameters(self):
         """the light's tensors (e.g. to make some of them trainable)"""

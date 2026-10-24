@@ -448,11 +448,12 @@ def rasterize_mesh(
 
 class MeshRenderer:
     """
-    Renders a Mesh, colored by its vertex colors or, if it has one, its texture map.
+    Renders a Mesh, colored by its vertex colors or, if it has one, its texture map
+    (the base color), lit per pixel if a light is given.
     """
 
     def __init__(self, camera : PerspectiveCamera, tile_size = 16, bg_color = (1.0, 1.0, 1.0), antialias = True,
-                 texture_filter = "mipmap"):
+                 texture_filter = "mipmap", light = None):
         self.camera = camera
         self.image_height = camera.image_height
         self.image_width = camera.image_width
@@ -462,13 +463,16 @@ class MeshRenderer:
         self.bg_color = bg_color        # background color
         self.antialias = antialias      # analytic edge antialiasing (fractional coverage at silhouettes)
         self.texture_filter = texture_filter  # "mipmap" (trilinear) or "bilinear" texture sampling
+        self.light = light              # default PointLight (None: unlit), overridden by the light given to render()
 
     def rasterize(self, mesh : Mesh, camera_pose : torch.Tensor, light = None) -> Dict[str, Tensor]:
         """
         Returns the raw rasterization (see `rasterize_mesh`), with the vertex
         colors or the texture as color ('color': [B, H, W, 3] premultiplied by
-        the coverage 'alpha'), lit per pixel if a `light` (PointLight) is given.
+        the coverage 'alpha'), lit per pixel by `light` (PointLight; default: self.light).
         """
+        if light is None:
+            light = self.light
         batch_size = camera_pose.shape[0]
         Ks = self.camera.get_intrinsic_matrix(batch_size=batch_size)  # [B, 3, 3]
         viewmats = self.camera.get_view_matrix(camera_pose)            # [B, 4, 4]
@@ -500,7 +504,8 @@ class MeshRenderer:
             camera_pose (torch.Tensor):
                 - for PerspectiveCamera, [B,6] (yaw, pitch, roll, dx, dy, dz);
                 - for OrbitCamera, [B, 3] (elevation, azimuth, distance).
-            light (PointLight): optional, per-pixel Phong shading of the mesh colors (vertex colors or texture).
+            light (PointLight): per-pixel Phong shading of the mesh colors (vertex colors or texture);
+                default: the renderer's light (None: unlit).
 
         Returns:
             rgb (torch.Tensor):   [B, H, W, 3]  composited over the background color

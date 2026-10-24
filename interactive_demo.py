@@ -26,7 +26,7 @@ from gmesh.scenes.mesh import Mesh
 from gmesh.scenes.gaussians import Gaussians
 from gmesh.scenes.cameras import PerspectiveCamera, OrbitCamera
 from gmesh.renderer.gmesh_renderer import GmeshRenderer
-from gmesh.renderer.mesh_shader import simple_phone_shading
+from gmesh.scenes.light import PointLight
 
 
 
@@ -73,8 +73,11 @@ camera = OrbitCamera(
     fov_x=40, fov_y=((1.0*RENDER_H)/RENDER_W)*40, z_near=0.1, z_far=100, device=device
 )
 
+# Light that shades the mesh per pixel (bluish ambient and diffuse colors, the mesh colors are white)
+light = PointLight(position=(0.0, 0.0, 10.0), ambient=(0.05, 0.15, 0.35), diffuse=(0.10, 0.35, 0.75), device=device)
+
 # Create Gmesh renderer
-gmesh_renderer = GmeshRenderer(camera=camera, tile_size=16, bg_color=(1.0, 1.0, 1.0))
+gmesh_renderer = GmeshRenderer(camera=camera, tile_size=16, bg_color=(1.0, 1.0, 1.0), light=light)
 
 
 
@@ -116,7 +119,7 @@ def update_image():
     opacity = dpg.get_value("opacity_slider")
 
     # Create Mesh and Gaussians
-    mesh = Mesh(verts=torch.clone(vertices), faces=faces)
+    mesh = Mesh(verts=torch.clone(vertices), faces=faces, colors=torch.ones_like(vertices))
     mesh2 = Mesh(verts=torch.clone(vertices), faces=faces)
     gaussians = mesh_to_gaussians(mesh=mesh2, method='facet3', trainable=False)
     # Orange Gaussians (colors are SH DC coefficients: rgb = 0.5 + C0 * sh)
@@ -132,11 +135,6 @@ def update_image():
     gaussians.means[:,0] += dpg.get_value("3dgs_offset_x_slider")
     gaussians.means[:,1] += dpg.get_value("3dgs_offset_y_slider")
     gaussians.means[:,2] += dpg.get_value("3dgs_offset_z_slider")
-
-    # Shading for visualizing mesh 
-    mesh.colors = simple_phone_shading(vertices=vertices, faces=faces,
-                                       ambient_color=torch.tensor([0.05, 0.15, 0.35], device=device),
-                                       diffuse_color=torch.tensor([0.10, 0.35, 0.75], device=device))
 
     # Render
     gmesh_renderer.mesh_renderer.antialias = dpg.get_value("antialias_checkbox")

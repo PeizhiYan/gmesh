@@ -19,7 +19,12 @@ def simple_phone_shading(vertices : torch.Tensor,
                          shininess : int = 30,
                          ):
     """
-    Assume there is only one light
+    Bakes Phong shading into per-vertex colors (one light, evaluated at the vertices,
+    for a fixed camera position).
+
+    For lighting that works the same way for vertex colors and texture maps (per
+    pixel, following the camera), give a PointLight (gmesh.scenes.light) to the
+    renderer instead, with the mesh colors as the base color.
 
     Args:
         - vertices:         [V, 3]
