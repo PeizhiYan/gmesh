@@ -23,8 +23,8 @@
 - `gmesh.utils.mesh_io`: OBJ (with texture coordinates) and texture loading, no extra dependencies.
 - Textured toy training example (`examples/train_textured_toy.py`, example 5): learn the texture map, and learn 3D
   Gaussians that mimic the textured mesh, from pre-rendered images of the textured mesh.
-- Hybrid toy training example (`examples/train_hybrid_toy.py`, example 6): a coarse textured mesh plus a few Gaussians,
-  trained jointly, vs. the coarse mesh alone and Gaussians alone.
+- Hybrid toy training example (`examples/train_hybrid_toy.py`, example 6): a textured mesh reconstructed from a sphere,
+  then Gaussians added and both fine-tuned together, vs. Gaussians alone.
 
 ### What's new in v1.0
 - Gmesh's own differentiable, tile-based CUDA mesh rasterizer (PyTorch3D is no longer used), with analytic edge
@@ -51,7 +51,7 @@ Please see ```./examples```:
 3. Hybrid Gaussians and Mesh Rendering via Gmesh: [Link](./examples/example-3%20-%20gmesh%20hybrid%20rendering.ipynb)
 4. Toy Training through the Hybrid Renderer (Gaussians, mesh, and both): [Link](./examples/example-4%20-%20toy%20training.ipynb)
 5. Toy Training from a Textured Mesh (texture map, and Gaussians mimicking the mesh): [Link](./examples/example-5%20-%20textured%20mesh%20training.ipynb)
-6. Coarse Mesh + Gaussians, Trained Jointly (vs. mesh only and Gaussians only): [Link](./examples/example-6%20-%20hybrid%20mesh%20and%20gaussians%20training.ipynb)
+6. Mesh from a Sphere, then Mesh + Gaussians Trained Jointly (vs. Gaussians only): [Link](./examples/example-6%20-%20hybrid%20mesh%20and%20gaussians%20training.ipynb)
 
 
 
@@ -213,25 +213,25 @@ images, Adam (L1 loss) fits
 It prints the loss and the PSNR on 6 held-out views, and saves test views (ground truth | initialization | trained),
 the loss curves and the learned texture next to the ground truth to `output/textured_toy_training/`.
 
-## Hybrid Training Example: Coarse Mesh + Gaussians
+## Hybrid Training Example: Mesh from a Sphere + Gaussians
 
 ```bash
 python examples/train_hybrid_toy.py                            # (or see example 6, the notebook version)
-python examples/train_hybrid_toy.py --budgets 1000 4000 --iters 2000
+python examples/train_hybrid_toy.py --mesh-iters 2000 --hybrid-iters 2000 --n-gaussians 4000
 ```
 
-Why render meshes and Gaussians together: from the same pre-rendered images of the detailed textured Spot mesh
-(5856 triangles), it trains
+From pre-rendered images (color and silhouette) of the detailed textured Spot mesh:
 
-- `mesh`: a coarse proxy mesh (360 triangles: the Spot control mesh with its vertices snapped onto the detailed
-  surface), with a learned texture map; its geometry is fixed like a template mesh (`--train-vertices` to learn it);
-- `gaussians`: K Gaussians alone (plain 3DGS), initialized on the coarse mesh;
-- `hybrid`: the coarse textured mesh and K Gaussians, rendered together and trained jointly: the mesh carries the large
-  textured surfaces, the Gaussians the detail it misses, in front of or behind its surface.
+- stage 1 (mesh): an icosphere (5120 triangles, sphere-mapped texture coordinates) is deformed into the object and its
+  texture map learned. The vertices are optimized in the "large steps" parameterization `u = (I + lambda L) v`
+  ([Nicolet et al. 2021](https://rgl.epfl.ch/publications/Nicolet2021Large)), with light smoothness regularizers;
+- stage 2 (hybrid): Gaussians are added on the fitted mesh, and the mesh and the Gaussians are fine-tuned together: the
+  mesh carries the large textured surfaces, the Gaussians the parts a deformed sphere hardly reaches (ears, horns);
+- baseline: the same number of Gaussians alone, trained for as many iterations.
 
-For several Gaussian budgets K, it compares the test PSNR of the three models, and saves the PSNR vs. budget plot, test
-views (ground truth | mesh | Gaussians | hybrid), and the decomposition of the hybrid model (its mesh alone, its Gaussians
-alone, both) to `output/hybrid_toy_training/`.
+It reports the test PSNR of the three models and the Chamfer distance of the meshes to the ground-truth mesh, and saves
+test views, the stage 1 progress, the decomposition of the hybrid model (its mesh, its Gaussians, both) and the fitted
+mesh (OBJ) to `output/hybrid_toy_training/`.
 
 A textured mesh is created with texture coordinates and a texture map (`[Ht, Wt, 3]`, values in `[0, 1]`):
 
