@@ -8,6 +8,9 @@
 <a href="https://opensource.org/licenses/MIT">
 <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT">
 </a>
+<a href="https://yan.auroratns.com/docs/gmesh/">
+<img src="https://img.shields.io/badge/Project-Page-blue.svg" alt="Project Page">
+</a>
 
 **Current Version**: v1.1 (October 25, 2026)
 
