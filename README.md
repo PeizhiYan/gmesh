@@ -9,9 +9,9 @@
 <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT">
 </a>
 
-**Current Version**: v1.0 (October 23, 2026)
+**Current Version**: v1.1 (October 25, 2026)
 
-### What's new in v1.1 (in progress)
+### What's new in v1.1
 - Textured meshes: a mesh is colored either by its vertex colors or by a texture map (with per-corner texture
   coordinates, as in OBJ files). Texture sampling is differentiable w.r.t. the texture map, so textures can be
   learned, with trilinear mipmapping by default (no aliasing when the texture is minified, and gradients reach all
@@ -297,7 +297,6 @@ python interactive_demo.py
 - [x] Support mesh texture map, differentiable (v1.1).
 - [x] Per-pixel mesh lighting in the renderer (v1.1).
 - [ ] Support batch (batch of camera poses) rendering.
-- [ ] Add two additional mesh to Gaussians conversion methods.
 - [x] Add a toy training example (v1.0).
 - [ ] Add more training examples (e.g. real multi-view data, densification).
 
@@ -329,7 +328,7 @@ Please cite this work if you find it useful in your projects.
     month = jul,
     title = {{GMesh: Differentiable Hybrid Renderer for 3D Gaussians and Meshes}},
     url = {https://github.com/PeizhiYan/gmesh},
-    version = {1.0},
+    version = {1.1},
     year = {2025}
 }
 ```
