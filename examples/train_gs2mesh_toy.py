@@ -18,7 +18,7 @@ other views (testing). No ground-truth geometry is used for training.
                         from many views, are fused into a truncated signed
                         distance volume; marching cubes gives a mesh (largest
                         connected component), with vertex colors from the
-                        nearest Gaussians
+                        nearest Gaussians (with the light's diffuse shading divided out)
   stage 3 (mesh):       the mesh vertices (large steps parameterization) and its
                         vertex colors are trained on the images
   stage 4 (hybrid):     N / 4 Gaussians are added on the mesh, and the mesh and
@@ -56,6 +56,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gmesh.scenes.mesh import Mesh
 from gmesh.scenes.cameras import OrbitCamera
 from gmesh.renderer.rasterizer_mesh import face_adjacency
+from gmesh.utils.graphics_utils import compute_vertex_normals
 from train_textured_toy import GAUSSIAN_LRS, SH_C0, load_scene, orbit_poses, make_gaussians, to_uint8
 from train_hybrid_toy import (REGULARIZER_WEIGHTS, SMOOTHNESS, VERTEX_LR, fit, initial_gaussian_params,
                               large_steps_matrices, make_renderers, mesh_edges, mesh_regularizers,
@@ -172,14 +173,20 @@ def extract_mesh(gaussian_rasterizer, camera, g_params, poses, grid=48, alpha_th
 
 
 @torch.no_grad()
-def colors_from_gaussians(verts, g_params, opacity_threshold=0.5):
-    """vertex colors: the color of the nearest opaque Gaussian"""
+def colors_from_gaussians(verts, faces, g_params, light, opacity_threshold=0.5):
+    """
+    Vertex colors from the nearest opaque Gaussian. The Gaussians' colors include the lighting, the mesh colors
+    are base colors (lit by the renderer), so the diffuse shading of the light at each vertex is divided out.
+    """
     gaussians = make_gaussians(g_params)
     opaque = gaussians.opacities > opacity_threshold
     means = gaussians.means[opaque]
     rgb = (0.5 + SH_C0 * gaussians.colors[opaque, 0]).clamp(0.02, 0.98)
     nearest = torch.cat([torch.cdist(c, means).argmin(dim=1) for c in verts.split(4096)])
-    return rgb[nearest]
+    normals = compute_vertex_normals(verts, faces)
+    to_light = F.normalize(light.position - verts, dim=-1)
+    shading = light.ambient + light.diffuse * (normals * to_light).sum(dim=-1, keepdim=True).clamp(min=0)
+    return (rgb[nearest] / shading.clamp(min=0.05)).clamp(0.02, 0.98)
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +289,7 @@ def main():
     print(f"extracted mesh: {verts.shape[0]} vertices, {faces.shape[0]} triangles; Chamfer distance to the ground "
           f"truth {chamfer_distance(verts, faces, gt_mesh.verts, gt_mesh.faces):.4f}")
     save_obj(os.path.join(args.out, "extracted_mesh.obj"), verts, faces)
-    mesh = initial_mesh(verts, faces, colors_from_gaussians(verts, g1))
+    mesh = initial_mesh(verts, faces, colors_from_gaussians(verts, faces, g1, light))
     with torch.no_grad():
         extracted_views = [renderers[0].render(make_mesh(mesh), p)[0][0] for p in test_poses]
 
