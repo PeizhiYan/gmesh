@@ -26,8 +26,10 @@ lit by a point light, pre-rendered (color and silhouette) from 24 orbit views
                      textured surfaces, the Gaussians the parts a deformed
                      sphere hardly reaches (ears, horns, thin legs), in front
                      of or behind its surface
-  baseline:          K Gaussians alone (plain 3DGS), initialized on the sphere
-                     surface, trained for as many iterations as both stages
+  baselines:         K Gaussians alone (plain 3DGS), (a) initialized on the
+                     sphere and trained for as many iterations as both stages,
+                     (b) initialized on the stage 1 mesh (same start as the
+                     hybrid model) and trained for as many iterations as stage 2
 
 It reports the test PSNR of the three models and the Chamfer distance of the
 meshes to the ground-truth mesh.
@@ -36,7 +38,7 @@ Usage (from the repository root):
     python examples/train_hybrid_toy.py
     python examples/train_hybrid_toy.py --mesh-iters 2000 --hybrid-iters 2000 --n-gaussians 4000
 
-It saves to --out: test views (ground truth | mesh | Gaussians | hybrid), the
+It saves to --out: test views (ground truth | mesh | Gaussians (a) | Gaussians (b) | hybrid), the
 decomposition of the hybrid model (its mesh, its Gaussians, both), the mesh
 during stage 1, loss curves, and the fitted mesh (OBJ). Example 6 (notebook)
 runs the same experiment step by step.
@@ -337,10 +339,11 @@ def train_hybrid_stage(renderers, sphere, m_params, n_gaussians, gt_train, gt_te
     return hist, m_params, g_params
 
 
-def train_gaussians_only(renderers, sphere, n_gaussians, gt_train, gt_test, train_poses, test_poses, iters, **kw):
-    """Baseline: Gaussians alone, initialized on the sphere. Returns (history, Gaussian params)."""
+def train_gaussians_only(renderers, verts, faces, n_gaussians, gt_train, gt_test, train_poses, test_poses, iters,
+                         **kw):
+    """Baseline: Gaussians alone, initialized on the mesh (verts, faces). Returns (history, Gaussian params)."""
     gaussian_rasterizer = renderers[1]
-    g_params = initial_gaussian_params(sphere["verts"], sphere["faces"], n_gaussians)
+    g_params = initial_gaussian_params(verts.detach(), faces, n_gaussians)
 
     def render(pose):
         rgb, _, alpha = gaussian_rasterizer.rasterize(make_gaussians(g_params), pose)
@@ -397,23 +400,31 @@ def main():
     hist_hybrid, m_params2, g_params = train_hybrid_stage(renderers, sphere, m_params, args.n_gaussians, gt_train,
                                                           gt_test, train_poses, test_poses, args.hybrid_iters,
                                                           log_every=args.log_every)
-    print("\n=== baseline: Gaussians only ===")
-    hist_gauss, _ = train_gaussians_only(renderers, sphere, args.n_gaussians, gt_train, gt_test, train_poses,
-                                         test_poses, args.mesh_iters + args.hybrid_iters, log_every=args.log_every)
+    print("\n=== baseline (a): Gaussians only, from the sphere ===")
+    hist_gauss, _ = train_gaussians_only(renderers, sphere["verts"], sphere["faces"], args.n_gaussians, gt_train,
+                                         gt_test, train_poses, test_poses, args.mesh_iters + args.hybrid_iters,
+                                         log_every=args.log_every)
+    print("\n=== baseline (b): Gaussians only, from the stage 1 mesh ===")
+    hist_gauss_mesh, _ = train_gaussians_only(renderers, mesh_verts(sphere, m_params), sphere["faces"],
+                                              args.n_gaussians, gt_train, gt_test, train_poses, test_poses,
+                                              args.hybrid_iters, log_every=args.log_every)
 
     print("\n=== summary ===")
     print(f"mesh (stage 1)       test PSNR {hist_mesh['psnr'][-1]:6.2f} dB   Chamfer distance "
           f"{chamfer(sphere['verts']):.4f} (sphere) -> {chamfer(mesh_verts(sphere, m_params)):.4f}")
     print(f"hybrid (stage 2)     test PSNR {hist_hybrid['psnr'][-1]:6.2f} dB   "
           f"Chamfer distance {chamfer(mesh_verts(sphere, m_params2)):.4f}")
-    print(f"Gaussians only       test PSNR {hist_gauss['psnr'][-1]:6.2f} dB   ({args.n_gaussians} Gaussians, "
-          f"{args.mesh_iters + args.hybrid_iters} iterations)")
+    print(f"Gaussians only (a)   test PSNR {hist_gauss['psnr'][-1]:6.2f} dB   ({args.n_gaussians} Gaussians from the "
+          f"sphere, {args.mesh_iters + args.hybrid_iters} iterations)")
+    print(f"Gaussians only (b)   test PSNR {hist_gauss_mesh['psnr'][-1]:6.2f} dB   ({args.n_gaussians} Gaussians from the "
+          f"stage 1 mesh, {args.hybrid_iters} iterations)")
 
     # outputs
-    finals = [hist_mesh, hist_gauss, hist_hybrid]
+    finals = [hist_mesh, hist_gauss, hist_gauss_mesh, hist_hybrid]
     rows = [np.concatenate([to_uint8(gt_test[v][0])] + [to_uint8(h["snapshots"][-1][1][v]) for h in finals], axis=1)
             for v in range(len(test_poses))]
-    imageio.imwrite(os.path.join(args.out, "test_views_gt_mesh_gaussians_hybrid.png"), np.concatenate(rows, axis=0))
+    imageio.imwrite(os.path.join(args.out, "test_views_gt_mesh_gaussiansA_gaussiansB_hybrid.png"),
+                    np.concatenate(rows, axis=0))
     imageio.imwrite(os.path.join(args.out, "stage1_mesh_progress.png"),
                     np.concatenate([to_uint8(views[0]) for _, views in hist_mesh["snapshots"]], axis=1))
     with torch.no_grad():

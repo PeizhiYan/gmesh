@@ -227,7 +227,8 @@ From pre-rendered images (color and silhouette) of the detailed textured Spot me
   ([Nicolet et al. 2021](https://rgl.epfl.ch/publications/Nicolet2021Large)), with light smoothness regularizers;
 - stage 2 (hybrid): Gaussians are added on the fitted mesh, and the mesh and the Gaussians are fine-tuned together: the
   mesh carries the large textured surfaces, the Gaussians the parts a deformed sphere hardly reaches (ears, horns);
-- baseline: the same number of Gaussians alone, trained for as many iterations.
+- baselines: the same number of Gaussians alone, (a) from the sphere, for as many iterations as both stages, (b) from the
+  stage 1 mesh, for as many iterations as stage 2 (the only difference to the hybrid model: the mesh is not rendered).
 
 It reports the test PSNR of the three models and the Chamfer distance of the meshes to the ground-truth mesh, and saves
 test views, the stage 1 progress, the decomposition of the hybrid model (its mesh, its Gaussians, both) and the fitted
