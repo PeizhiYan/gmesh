@@ -25,6 +25,8 @@
   Gaussians that mimic the textured mesh, from pre-rendered images of the textured mesh.
 - Hybrid toy training example (`examples/train_hybrid_toy.py`, example 6): a textured mesh reconstructed from a sphere,
   then Gaussians added and both fine-tuned together, vs. Gaussians alone.
+- Gaussians → mesh → hybrid example (`examples/train_gs2mesh_toy.py`, example 7): Gaussians from a random initialization,
+  a mesh extracted from them (TSDF fusion + marching cubes), then the mesh plus fewer Gaussians trained together.
 
 ### What's new in v1.0
 - Gmesh's own differentiable, tile-based CUDA mesh rasterizer (PyTorch3D is no longer used), with analytic edge
@@ -52,6 +54,7 @@ Please see ```./examples```:
 4. Toy Training through the Hybrid Renderer (Gaussians, mesh, and both): [Link](./examples/example-4%20-%20toy%20training.ipynb)
 5. Toy Training from a Textured Mesh (texture map, and Gaussians mimicking the mesh): [Link](./examples/example-5%20-%20textured%20mesh%20training.ipynb)
 6. Mesh from a Sphere, then Mesh + Gaussians Trained Jointly (vs. Gaussians only): [Link](./examples/example-6%20-%20hybrid%20mesh%20and%20gaussians%20training.ipynb)
+7. Gaussians → Mesh → Mesh + Fewer Gaussians (better quality with fewer parameters): [Link](./examples/example-7%20-%20gaussians%20to%20mesh%20to%20hybrid%20training.ipynb)
 
 
 
@@ -233,6 +236,20 @@ From pre-rendered images (color and silhouette) of the detailed textured Spot me
 It reports the test PSNR of the three models and the Chamfer distance of the meshes to the ground-truth mesh, and saves
 test views, the stage 1 progress, the decomposition of the hybrid model (its mesh, its Gaussians, both) and the fitted
 mesh (OBJ) to `output/hybrid_toy_training/`.
+
+## Gaussians → Mesh → Hybrid Example
+
+```bash
+pip install scikit-image                                       # marching cubes, only for this example
+python examples/train_gs2mesh_toy.py                           # (or see example 7, the notebook version)
+```
+
+From the same pre-rendered images (no ground-truth geometry): N Gaussians from a random initialization are trained;
+a mesh is extracted from them (their depth and silhouette from 60 views fused into a truncated signed distance
+volume, then marching cubes); its vertices and vertex colors are trained; then N / 4 Gaussians are added and the mesh
+and the Gaussians are trained together. It compares the test PSNR and the number of parameters with the stage 1
+Gaussians trained further and with N / 4 Gaussians alone, and saves the extracted and trained meshes (OBJ) to
+`output/gs2mesh_toy_training/`.
 
 A textured mesh is created with texture coordinates and a texture map (`[Ht, Wt, 3]`, values in `[0, 1]`):
 

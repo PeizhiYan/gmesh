@@ -141,15 +141,20 @@ def initial_sphere(gt_verts, level=4, smoothness=SMOOTHNESS):
     lo, hi = gt_verts.amin(dim=0), gt_verts.amax(dim=0)
     center, radius = (lo + hi) / 2, 0.5 * (hi - lo).max().item()
     uvs, faces_uv = sphere_uvs(unit, faces)
-    n = unit.shape[0]
+    M, M_inv = large_steps_matrices(unit.shape[0], faces, smoothness)
+    return {"verts": center + radius * unit, "faces": faces, "uvs": uvs, "faces_uv": faces_uv,
+            "M": M, "M_inv": M_inv}
+
+
+def large_steps_matrices(n_verts, faces, smoothness=SMOOTHNESS):
+    """M = I + smoothness L (L: combinatorial Laplacian of the mesh) and its inverse (dense)."""
     edges = mesh_edges(faces)
-    adjacency = torch.zeros(n, n, device=unit.device)
+    adjacency = torch.zeros(n_verts, n_verts, device=faces.device)
     adjacency[edges[:, 0], edges[:, 1]] = 1.0
     adjacency[edges[:, 1], edges[:, 0]] = 1.0
     laplacian = torch.diag(adjacency.sum(dim=1)) - adjacency
-    M = torch.eye(n, device=unit.device) + smoothness * laplacian
-    return {"verts": center + radius * unit, "faces": faces, "uvs": uvs, "faces_uv": faces_uv,
-            "M": M, "M_inv": torch.linalg.inv(M)}
+    M = torch.eye(n_verts, device=faces.device) + smoothness * laplacian
+    return M, torch.linalg.inv(M)
 
 
 # ---------------------------------------------------------------------------
@@ -289,8 +294,8 @@ def fit(render, params, lrs, gt_train, gt_test, train_poses, test_poses, iters, 
             hist["psnr"].append(test_psnr(views))
             hist["snapshots"].append((it, views))
         if log_every and (it % log_every == 0 or it == iters):
-            print(f"iter {it:5d}  loss {np.mean(hist['loss'][-log_every:]):.4f}  "
-                  f"test PSNR {hist['psnr'][-1]:.2f}  ({time.time() - t0:.1f}s)")
+            evaluated = f"  test PSNR {hist['psnr'][-1]:.2f}" if hist["psnr_iters"][-1] == it else ""
+            print(f"iter {it:5d}  loss {np.mean(hist['loss'][-log_every:]):.4f}{evaluated}  ({time.time() - t0:.1f}s)")
     return hist
 
 
