@@ -13,8 +13,10 @@ views (testing).
 
 Models (trained with Adam and an L1 loss on the same images):
 
-  mesh:       the coarse Spot control mesh (360 triangles) with a learned
-              texture map and learned vertex positions
+  mesh:       a coarse proxy mesh (360 triangles: the Spot control mesh, with
+              its vertices snapped onto the detailed surface) with a learned
+              texture map; its geometry is fixed (like a template mesh), or
+              also learned with --train-vertices
   gaussians:  K 3D Gaussians alone (plain 3DGS), initialized on the coarse mesh
   hybrid:     the coarse textured mesh and K Gaussians, rendered together with
               Gmesh: the mesh carries the large textured surfaces, the Gaussians
@@ -65,8 +67,12 @@ VERTEX_LR = 2e-3
 # Scene and models
 # ---------------------------------------------------------------------------
 
-def load_coarse_mesh(device):
-    """The Spot control mesh (quads split into 360 triangles, with texture coordinates), rotated as the ground truth."""
+def load_coarse_mesh(device, snap_to=None):
+    """
+    The Spot control mesh (quads split into 360 triangles, with texture coordinates), rotated as the ground
+    truth. With `snap_to` (the vertices [V, 3] of the detailed mesh), each vertex is moved to the nearest of
+    them: the coarse mesh then lies on (and, with its flat triangles, inside) the detailed surface.
+    """
     verts, faces, uvs, faces_uv = load_obj(os.path.join(SPOT_DIR, "spot_control_mesh.obj"), device=device)
     theta = math.pi * 0.8
     rotation = torch.tensor([
@@ -74,7 +80,10 @@ def load_coarse_mesh(device):
         [0, 1, 0],
         [-math.sin(theta), 0, math.cos(theta)],
     ], dtype=torch.float32, device=device)
-    return verts @ rotation.T, faces, uvs, faces_uv
+    verts = verts @ rotation.T
+    if snap_to is not None:
+        verts = snap_to[torch.cdist(verts, snap_to).argmin(dim=1)]
+    return verts, faces, uvs, faces_uv
 
 
 def sample_surface(verts, faces, n, seed=0):
@@ -100,8 +109,9 @@ def initial_mesh_params(coarse, tex_size):
 
 def make_mesh(coarse, p):
     verts, faces, uvs, faces_uv = coarse
-    return Mesh(verts=verts + p["vertex_offsets"], faces=faces, uvs=uvs, faces_uv=faces_uv,
-                texture=torch.sigmoid(p["texture_logits"]))
+    if "vertex_offsets" in p:
+        verts = verts + p["vertex_offsets"]
+    return Mesh(verts=verts, faces=faces, uvs=uvs, faces_uv=faces_uv, texture=torch.sigmoid(p["texture_logits"]))
 
 
 def initial_gaussian_params(coarse, n, seed=0):
@@ -129,14 +139,17 @@ def count_parameters(params):
 # ---------------------------------------------------------------------------
 
 def train_model(model, renderers, coarse, n_gaussians, gt_train, gt_test, train_poses, test_poses, iters,
-                tex_size=256, snapshot_every=None, log_every=200, seed=0):
+                tex_size=256, train_vertices=False, snapshot_every=None, log_every=200, seed=0):
     """
-    Trains one model ("mesh", "gaussians" or "hybrid"). Returns (history, mesh params, Gaussian params);
+    Trains one model ("mesh", "gaussians" or "hybrid"): the texture map of the coarse mesh (and its vertex
+    positions if `train_vertices`) and/or the Gaussians. Returns (history, mesh params, Gaussian params);
     the history also has the number of trained parameters ('n_params').
     """
     torch.manual_seed(seed)
     mesh_renderer, gaussian_rasterizer, gmesh_renderer = renderers
     m_params = initial_mesh_params(coarse, tex_size) if model in ("mesh", "hybrid") else {}
+    if not train_vertices:
+        m_params.pop("vertex_offsets", None)
     g_params = initial_gaussian_params(coarse, n_gaussians, seed=seed) if model in ("gaussians", "hybrid") else {}
     for p in list(m_params.values()) + list(g_params.values()):
         p.requires_grad_(True)
@@ -174,6 +187,7 @@ def main():
     parser.add_argument("--iters", type=int, default=3000)
     parser.add_argument("--size", type=int, default=256, help="image width and height")
     parser.add_argument("--tex-size", type=int, default=256, help="resolution of the learned texture map")
+    parser.add_argument("--train-vertices", action="store_true", help="also learn the coarse mesh vertex positions")
     parser.add_argument("--log-every", type=int, default=500)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--out", default=os.path.join(ROOT, "output", "hybrid_toy_training"))
@@ -182,7 +196,7 @@ def main():
 
     device = args.device
     gt_mesh, light = load_scene(device)
-    coarse = load_coarse_mesh(device)
+    coarse = load_coarse_mesh(device, snap_to=gt_mesh.verts)
     print(f"ground truth: {gt_mesh.num_faces} triangles; coarse mesh: {coarse[1].shape[0]} triangles")
     camera = OrbitCamera(image_width=args.size, image_height=args.size, fov_x=40, fov_y=40,
                          z_near=0.1, z_far=100, device=device)
@@ -198,7 +212,7 @@ def main():
         print(f"\n=== {model}" + (f", {k} Gaussians" if k else "") + " ===")
         hist, m_params, g_params = train_model(model, renderers, coarse, k, gt_train, gt_test, train_poses,
                                                test_poses, args.iters, tex_size=args.tex_size,
-                                               log_every=args.log_every)
+                                               train_vertices=args.train_vertices, log_every=args.log_every)
         results[(model, k)] = (hist, m_params, g_params)
         print(f"test PSNR {hist['psnr'][0]:.2f} -> {hist['psnr'][-1]:.2f} dB, {hist['n_params']} parameters")
 

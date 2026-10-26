@@ -223,7 +223,8 @@ python examples/train_hybrid_toy.py --budgets 1000 4000 --iters 2000
 Why render meshes and Gaussians together: from the same pre-rendered images of the detailed textured Spot mesh
 (5856 triangles), it trains
 
-- `mesh`: the coarse Spot control mesh (360 triangles), with a learned texture map and learned vertex positions;
+- `mesh`: a coarse proxy mesh (360 triangles: the Spot control mesh with its vertices snapped onto the detailed
+  surface), with a learned texture map; its geometry is fixed like a template mesh (`--train-vertices` to learn it);
 - `gaussians`: K Gaussians alone (plain 3DGS), initialized on the coarse mesh;
 - `hybrid`: the coarse textured mesh and K Gaussians, rendered together and trained jointly: the mesh carries the large
   textured surfaces, the Gaussians the detail it misses, in front of or behind its surface.
