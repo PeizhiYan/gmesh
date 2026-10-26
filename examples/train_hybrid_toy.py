@@ -20,7 +20,9 @@ lit by a point light, pre-rendered (color and silhouette) from 24 orbit views
                      which smooths the updates over the surface, with light
                      smoothness regularizers (Laplacian, edge length, normal
                      consistency)
-  stage 2 (hybrid):  K Gaussians are added on the fitted mesh, and the mesh
+  stage 2 (hybrid):  K Gaussians are added just in front of the fitted mesh
+                     surface (flat, with the mesh's lit colors, mostly
+                     transparent), and the mesh
                      (vertices, texture) and the Gaussians are fine-tuned
                      together through Gmesh: the mesh carries the large
                      textured surfaces, the Gaussians the parts a deformed
@@ -65,7 +67,10 @@ from gmesh.scenes.cameras import OrbitCamera
 from gmesh.renderer.rasterizer_mesh import MeshRenderer, face_adjacency
 from gmesh.renderer.rasterizer_gaussians import GaussianRasterizer
 from gmesh.renderer.gmesh_renderer import GmeshRenderer
-from train_textured_toy import GAUSSIAN_LRS, TEXTURE_LR, load_scene, orbit_poses, make_gaussians, psnr, to_uint8
+from gmesh.renderer.texture import sample_texture
+from gmesh.utils.graphics_utils import compute_vertex_normals
+from train_textured_toy import (GAUSSIAN_LRS, SH_C0, TEXTURE_LR, load_scene, orbit_poses, make_gaussians, psnr,
+                                to_uint8)
 
 VERTEX_LR = 2e-2            # learning rate of the vertex parameters u (large steps parameterization)
 SMOOTHNESS = 10.0           # lambda of u = (I + lambda L) v
@@ -189,16 +194,24 @@ def mesh_regularizers(verts, faces, edges, adjacency):
     }
 
 
-def sample_surface(verts, faces, n, seed=0):
-    """n points uniformly distributed (by area) on a triangle mesh. Returns [n, 3] and the total area."""
+def sample_faces(verts, faces, n, seed=0):
+    """
+    n points uniformly distributed (by area) on a triangle mesh, as faces [n] and barycentric coordinates [n, 3].
+    Also returns the face areas [F].
+    """
     g = torch.Generator().manual_seed(seed)
     v0, v1, v2 = (verts[faces[:, k]] for k in range(3))
     areas = 0.5 * torch.cross(v1 - v0, v2 - v0, dim=-1).norm(dim=-1)
     face = torch.multinomial(areas.detach().cpu(), n, replacement=True, generator=g).to(verts.device)
     r1, r2 = torch.rand(2, n, generator=g).to(verts.device)
     s = r1.sqrt()
-    b0, b1, b2 = 1 - s, s * (1 - r2), s * r2
-    points = b0[:, None] * v0[face] + b1[:, None] * v1[face] + b2[:, None] * v2[face]
+    return face, torch.stack([1 - s, s * (1 - r2), s * r2], dim=-1), areas
+
+
+def sample_surface(verts, faces, n, seed=0):
+    """n points uniformly distributed (by area) on a triangle mesh. Returns [n, 3] and the total area."""
+    face, bary, areas = sample_faces(verts, faces, n, seed=seed)
+    points = (bary[:, :, None] * verts[faces[face]]).sum(dim=1)
     return points, areas.sum().item()
 
 
@@ -233,17 +246,51 @@ def make_mesh(sphere, p):
                 texture=torch.sigmoid(p["texture_logits"]))
 
 
-def initial_gaussian_params(verts, faces, n, seed=0):
-    """n Gaussians on a mesh surface: random rotations, gray, half transparent, sized to cover it."""
-    means, area = sample_surface(verts.detach(), faces, n, seed=seed)
-    g = torch.Generator().manual_seed(seed + 1)
-    device = verts.device
+@torch.no_grad()
+def initial_gaussian_params(mesh, n, light=None, seed=0, flatness=0.1, offset=2.0, opacity=0.1):
+    """
+    n Gaussians spread (by area) over the surface of `mesh` (a Mesh, with vertex colors or a texture), that
+    start out looking like the mesh: flat discs in its tangent plane (thickness `flatness` times their radius,
+    sized to cover the surface), `offset` times their thickness in front of it (along the face normals, from
+    the face winding, as the shading uses), with the mesh color at their center lit by `light` (ambient +
+    diffuse: the renderer does not light Gaussians, so the lighting is baked into their colors), and mostly
+    transparent (`opacity`).
+
+    Starting in front of the surface matters for the hybrid model: a Gaussian centered on the surface is cut
+    in half by the soft depth test, so gray, half transparent Gaussians there only dim the mesh, and training
+    pushes them behind the surface, where they are rarely seen.
+    """
+    verts, faces = mesh.verts.detach(), mesh.faces.long()
+    face, bary, areas = sample_faces(verts, faces, n, seed=seed)
+    tri = verts[faces[face]]                                                 # [n, 3, 3]
+    points = (bary[:, :, None] * tri).sum(dim=1)
+    normals = F.normalize(torch.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0], dim=-1), dim=-1)
+
+    # mesh color at the points (base color, then lit as the renderer does, without the view-dependent specular)
+    if mesh.has_texture:
+        texcoords = (bary[:, :, None] * mesh.uvs[mesh.faces_uv[face].long()]).sum(dim=1)
+        rgb = sample_texture(mesh.texture.detach(), texcoords, filter="bilinear")
+    else:
+        rgb = (bary[:, :, None] * mesh.colors.detach()[faces[face]]).sum(dim=1)
+    if light is not None:
+        shading_normals = F.normalize((bary[:, :, None] * compute_vertex_normals(verts, faces)[faces[face]]).sum(dim=1),
+                                      dim=-1)
+        to_light = F.normalize(light.position.detach() - points, dim=-1)
+        n_dot_l = (shading_normals * to_light).sum(dim=-1, keepdim=True).clamp(min=0)
+        rgb = rgb * (light.ambient.detach() + light.diffuse.detach() * n_dot_l)
+    rgb = rgb.clamp(0.02, 0.98)
+
+    # rotation taking the local z axis to the normal: q = (1 + z.n, z x n) (w, x, y, z), normalized
+    quats = torch.stack([1 + normals[:, 2], -normals[:, 1], normals[:, 0], torch.zeros_like(normals[:, 0])], dim=-1)
+    quats[quats[:, 0] < 1e-6] = torch.tensor([0.0, 1.0, 0.0, 0.0], device=verts.device)  # normal = -z
+    radius = 0.5 * math.sqrt(areas.sum().item() / n)
+    thickness = flatness * radius
     return {
-        "means": means,
-        "quats": F.normalize(torch.randn(n, 4, generator=g), dim=-1).to(device),
-        "log_scales": torch.full((n, 3), math.log(0.5 * math.sqrt(area / n)), device=device),
-        "opacity_logits": torch.zeros(n, device=device),  # opacity 0.5
-        "sh": torch.zeros(n, 1, 3, device=device),        # gray (rgb 0.5)
+        "means": points + offset * thickness * normals,
+        "quats": F.normalize(quats, dim=-1),
+        "log_scales": torch.log(verts.new_tensor([radius, radius, thickness])).expand(n, 3).clone(),
+        "opacity_logits": torch.full((n,), math.log(opacity / (1 - opacity)), device=verts.device),
+        "sh": ((rgb - 0.5) / SH_C0)[:, None, :],  # rgb = 0.5 + SH_C0 * sh (degree 0)
     }
 
 
@@ -255,11 +302,12 @@ def make_renderers(camera, light):
 
 
 def fit(render, params, lrs, gt_train, gt_test, train_poses, test_poses, iters, regularize=None,
-        snapshot_every=None, log_every=200, seed=0):
+        snapshot_every=None, log_every=200, seed=0, callback=None):
     """
     Adam on `params` (dict of tensors, learning rates `lrs` decaying 10x over the run) with the loss
     L1(color) + SILHOUETTE_WEIGHT * L1(alpha) [+ regularize()]. `render(pose)` returns (rgb, alpha) [H, W, *].
     gt_train / gt_test are lists of (rgb, alpha). Returns the history: losses, test PSNR, test-view snapshots.
+    `callback(it, params)`, if given, is called after every step (e.g. to record frames of the training).
     """
     torch.manual_seed(seed)
     for p in params.values():
@@ -287,6 +335,8 @@ def fit(render, params, lrs, gt_train, gt_test, train_poses, test_poses, iters, 
         loss.backward()
         optimizer.step()
         scheduler.step()
+        if callback is not None:
+            callback(it, params)
         hist["loss"].append(loss.item())
         if (snapshot_every and it % snapshot_every == 0) or it == iters:
             views = test_views()
@@ -325,7 +375,7 @@ def train_hybrid_stage(renderers, sphere, m_params, n_gaussians, gt_train, gt_te
     gmesh_renderer = renderers[2]
     faces = sphere["faces"]
     m_params = {k: v.detach().clone() for k, v in m_params.items()}
-    g_params = initial_gaussian_params(mesh_verts(sphere, m_params), faces, n_gaussians)
+    g_params = initial_gaussian_params(make_mesh(sphere, m_params), n_gaussians, light=renderers[0].light)
     edges, adjacency = mesh_edges(faces), face_adjacency(faces).long()
 
     def render(pose):
@@ -344,11 +394,10 @@ def train_hybrid_stage(renderers, sphere, m_params, n_gaussians, gt_train, gt_te
     return hist, m_params, g_params
 
 
-def train_gaussians_only(renderers, verts, faces, n_gaussians, gt_train, gt_test, train_poses, test_poses, iters,
-                         **kw):
-    """Baseline: Gaussians alone, initialized on the mesh (verts, faces). Returns (history, Gaussian params)."""
+def train_gaussians_only(renderers, mesh, n_gaussians, gt_train, gt_test, train_poses, test_poses, iters, **kw):
+    """Baseline: Gaussians alone, initialized on `mesh` (a Mesh). Returns (history, Gaussian params)."""
     gaussian_rasterizer = renderers[1]
-    g_params = initial_gaussian_params(verts.detach(), faces, n_gaussians)
+    g_params = initial_gaussian_params(mesh, n_gaussians, light=renderers[0].light)
 
     def render(pose):
         rgb, _, alpha = gaussian_rasterizer.rasterize(make_gaussians(g_params), pose)
@@ -406,13 +455,13 @@ def main():
                                                           gt_test, train_poses, test_poses, args.hybrid_iters,
                                                           log_every=args.log_every)
     print("\n=== baseline (a): Gaussians only, from the sphere ===")
-    hist_gauss, _ = train_gaussians_only(renderers, sphere["verts"], sphere["faces"], args.n_gaussians, gt_train,
-                                         gt_test, train_poses, test_poses, args.mesh_iters + args.hybrid_iters,
-                                         log_every=args.log_every)
+    hist_gauss, _ = train_gaussians_only(renderers, Mesh(verts=sphere["verts"], faces=sphere["faces"]),
+                                         args.n_gaussians, gt_train, gt_test, train_poses, test_poses,
+                                         args.mesh_iters + args.hybrid_iters, log_every=args.log_every)
     print("\n=== baseline (b): Gaussians only, from the stage 1 mesh ===")
-    hist_gauss_mesh, _ = train_gaussians_only(renderers, mesh_verts(sphere, m_params), sphere["faces"],
-                                              args.n_gaussians, gt_train, gt_test, train_poses, test_poses,
-                                              args.hybrid_iters, log_every=args.log_every)
+    hist_gauss_mesh, _ = train_gaussians_only(renderers, make_mesh(sphere, m_params), args.n_gaussians, gt_train,
+                                              gt_test, train_poses, test_poses, args.hybrid_iters,
+                                              log_every=args.log_every)
 
     print("\n=== summary ===")
     print(f"mesh (stage 1)       test PSNR {hist_mesh['psnr'][-1]:6.2f} dB   Chamfer distance "

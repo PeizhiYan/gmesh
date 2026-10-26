@@ -21,8 +21,10 @@ other views (testing). No ground-truth geometry is used for training.
                         nearest Gaussians (with the light's diffuse shading divided out)
   stage 3 (mesh):       the mesh vertices (large steps parameterization) and its
                         vertex colors are trained on the images
-  stage 4 (hybrid):     N / 4 Gaussians are added on the mesh, and the mesh and
-                        the Gaussians are trained together through Gmesh
+  stage 4 (hybrid):     N / 4 Gaussians are added just in front of the mesh
+                        surface (flat, with the mesh's lit colors, mostly
+                        transparent), and the mesh and the Gaussians are
+                        trained together through Gmesh
 
 Baselines: the stage 1 Gaussians trained for as many more iterations as stages
 3 + 4, and N / 4 Gaussians alone (random initialization, as many iterations as
@@ -236,7 +238,7 @@ def train_hybrid(renderers, mesh, n_gaussians, gt_train, gt_test, train_poses, t
     """Adds n Gaussians on the mesh and trains both. Returns (history, mesh params, Gaussian params)."""
     gmesh_renderer = renderers[2]
     m_params = {k: v.detach().clone() for k, v in mesh["params"].items()}
-    g_params = initial_gaussian_params(mesh_verts(mesh, m_params), mesh["faces"], n_gaussians)
+    g_params = initial_gaussian_params(make_mesh(mesh, m_params), n_gaussians, light=renderers[0].light)
 
     def render(pose):
         rgb, _, alpha = gmesh_renderer.render(mesh=make_mesh(mesh, m_params), gaussians=make_gaussians(g_params),
