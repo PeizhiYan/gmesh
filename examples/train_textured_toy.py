@@ -143,7 +143,7 @@ def train_texture(mesh_renderer, mesh, light, gt_train, gt_test, train_poses, te
         rgb, _, _ = mesh_renderer.render(textured_mesh(mesh, torch.sigmoid(logits)), pose, light=light)
         return rgb[0]
 
-    return _train(render, [logits], optimizer, gt_train, gt_test, train_poses, test_poses, iters,
+    return train_loop(render, [logits], optimizer, gt_train, gt_test, train_poses, test_poses, iters,
                   snapshot_every, log_every, extra=lambda: {"texture": torch.sigmoid(logits).detach()})
 
 
@@ -163,12 +163,12 @@ def train_gaussians(gaussian_rasterizer, params, gt_train, gt_test, train_poses,
         rgb, _, _ = gaussian_rasterizer.rasterize(make_gaussians(params), pose)
         return rgb[0]
 
-    return _train(render, list(params.values()), optimizer, gt_train, gt_test, train_poses, test_poses, iters,
+    return train_loop(render, list(params.values()), optimizer, gt_train, gt_test, train_poses, test_poses, iters,
                   snapshot_every, log_every)
 
 
-def _train(render, tensors, optimizer, gt_train, gt_test, train_poses, test_poses, iters, snapshot_every,
-           log_every, extra=None):
+def train_loop(render, tensors, optimizer, gt_train, gt_test, train_poses, test_poses, iters, snapshot_every,
+               log_every, extra=None):
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.1 ** (1.0 / iters))  # lr / 10 at the end
 
     def test_views():
